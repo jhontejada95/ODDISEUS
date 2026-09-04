@@ -11,6 +11,25 @@ process.env.KV_REST_API_TOKEN = "";
 
 const { default: app } = await import("../server/index.js");
 
+test("mcp status is blocked for auth when Binance MCP token is not configured", async () => {
+  const server = app.listen(0);
+  await once(server, "listening");
+  const { port } = server.address();
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/api/mcp/status`);
+    const payload = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(payload.status, "blocked_auth_required");
+    assert.equal(payload.configured, false);
+    assert.equal(payload.auth, "oauth_token_required");
+    assert.equal(payload.serverUrl, "https://agent.binance.com/mcp/agentic");
+  } finally {
+    await new Promise((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+  }
+});
+
 test("wallet approval requires a challenge, rejects unsigned approval, and accepts verified EVM signature", async () => {
   const server = app.listen(0);
   await once(server, "listening");

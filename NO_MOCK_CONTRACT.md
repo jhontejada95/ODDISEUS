@@ -18,10 +18,11 @@ Every visible capability must be one of:
 - Wallet approval signatures through EIP-191 message signing with injected EVM wallets.
 - Operator approval, signature, and receipt hash generation.
 - Durable run/receipt persistence when Upstash Redis REST env vars are configured.
+- Binance Agent OS MCP status probing when `BINANCE_MCP_ACCESS_TOKEN` is configured and a real MCP handshake succeeds.
 
 ## Current not-configured capabilities
 
-- Binance MCP transport.
+- Binance MCP transport remains `blocked_auth_required` until `BINANCE_MCP_ACCESS_TOKEN` authenticates against the official MCP endpoint.
 - B402/x402 external-intelligence settlement unless `B402_TESTNET_ENDPOINT` is set.
 - WalletConnect QR/mobile approvals unless `VITE_WALLETCONNECT_PROJECT_ID` is set.
 - Receipt on-chain anchoring unless `ODDISEUS_ONCHAIN_ANCHOR_ENDPOINT` is set.
@@ -34,7 +35,7 @@ Frontend copy must derive operational values from `/api/config`, `/api/health`, 
 
 Any `not_configured` capability is a build target, not an acceptable final state. The current activation order is:
 
-1. WalletConnect QR/mobile coverage.
-2. MCP transport.
+1. Binance Agent OS MCP OAuth/token authorization.
+2. WalletConnect QR/mobile coverage.
 3. B402/x402 paid-intelligence endpoint.
 4. Receipt anchoring.

@@ -15,13 +15,14 @@ Current real lanes:
 - Live Binance Spot/Futures Testnet market reads.
 - Signed Binance Spot Testnet order placement when the testnet API key, secret, and execution flag are configured.
 - Deterministic risk and policy checks computed from the captured run state.
-- Operator approval hash and verifiable receipt hash.
+- Wallet approval signatures and verifiable receipt hash.
+- Durable run/receipt persistence when Upstash Redis REST is configured.
 
 Explicitly not claimed until configured:
 
 - B402/x402 paid-intelligence settlement. If `B402_TESTNET_ENDPOINT` is missing, the run records `not_configured` and does not fabricate paid data.
-- MCP execution transport. The current execution adapter is Binance Spot Testnet REST.
-- Wallet signatures, on-chain anchoring, or mainnet execution.
+- MCP execution transport. ODDISEUS includes a real Binance Agent OS MCP probe, but reports `blocked_auth_required` until `BINANCE_MCP_ACCESS_TOKEN` can authenticate against Binance MCP.
+- On-chain anchoring or mainnet execution.
 
 ## Core Demo Flow
 
@@ -102,6 +103,8 @@ BINANCE_TESTNET_API_KEY
 BINANCE_TESTNET_API_SECRET
 BINANCE_TESTNET_BASE_URL=https://testnet.binance.vision
 BINANCE_FUTURES_TESTNET_BASE_URL=https://demo-fapi.binance.com
+BINANCE_MCP_SERVER_URL=https://agent.binance.com/mcp/agentic
+BINANCE_MCP_ACCESS_TOKEN
 ODDISEUS_DEFAULT_SYMBOL=BTCUSDT
 ODDISEUS_ENABLE_TESTNET_EXECUTION=true
 ```
@@ -144,6 +147,24 @@ Injected EVM wallets such as MetaMask, Rabby, Binance Wallet, and compatible bro
 ```text
 VITE_WALLETCONNECT_PROJECT_ID
 ```
+
+### Binance Agent OS MCP
+
+ODDISEUS includes a real MCP transport probe for Binance Agent OS. It connects to the configured Streamable HTTP MCP endpoint, lists available tools, and exposes a `probeHash` only after the live handshake succeeds.
+
+Default endpoint:
+
+```text
+BINANCE_MCP_SERVER_URL=https://agent.binance.com/mcp/agentic
+```
+
+Required for a live MCP status:
+
+```text
+BINANCE_MCP_ACCESS_TOKEN
+```
+
+If the token is missing or Binance requires additional OAuth authorization, `/api/config`, `/api/health`, and `/api/mcp/status` report `blocked_auth_required`. ODDISEUS does not claim MCP is live from REST calls alone.
 
 ## Submission
 

@@ -3,6 +3,8 @@ import crypto from "node:crypto";
 import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { Redis } from "@upstash/redis";
 import { verifyMessage } from "viem";
 
@@ -16,7 +18,7 @@ let redisClient = null;
 app.use(express.json({ limit: "1mb" }));
 
 const PORT = Number(process.env.PORT || 5173);
-const PRODUCT_VERSION = process.env.ODDISEUS_PRODUCT_VERSION || "0.9.7";
+const PRODUCT_VERSION = process.env.ODDISEUS_PRODUCT_VERSION || "0.9.8";
 const TRUTH_MODE = "fail_closed_no_mock";
 const DEFAULT_SYMBOL = process.env.ODDISEUS_DEFAULT_SYMBOL || "BTCUSDT";
 const TESTNET_BASE_URL = normalizeBaseUrl(
@@ -27,6 +29,14 @@ const FUTURES_TESTNET_BASE_URL = normalizeBaseUrl(
   process.env.BINANCE_FUTURES_TESTNET_BASE_URL,
   "https://demo-fapi.binance.com"
 );
+const BINANCE_MCP_SERVER_URL = normalizeEndpointUrl(
+  process.env.BINANCE_MCP_SERVER_URL,
+  "https://agent.binance.com/mcp/agentic"
+);
+const BINANCE_MCP_ACCESS_TOKEN = String(
+  process.env.BINANCE_MCP_ACCESS_TOKEN || process.env.BINANCE_AGENT_OS_MCP_TOKEN || ""
+).trim();
+let mcpProbeCache = null;
 
 const policy = {
   maxRunBudgetUsdt: 10,
@@ -53,8 +63,8 @@ const stageOrder = [
   "receipt"
 ];
 
-app.get("/api/health", (_req, res) => {
-  const config = buildRuntimeConfig();
+app.get("/api/health", async (_req, res) => {
+  const config = buildRuntimeConfig({ mcp: await probeBinanceMcp() });
   res.json({
     ok: true,
     service: "oddiseus",
@@ -75,8 +85,12 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
-app.get("/api/config", (_req, res) => {
-  res.json(buildRuntimeConfig());
+app.get("/api/config", async (_req, res) => {
+  res.json(buildRuntimeConfig({ mcp: await probeBinanceMcp() }));
+});
+
+app.get("/api/mcp/status", async (_req, res) => {
+  res.json(await probeBinanceMcp({ force: true }));
 });
 
 app.post("/api/runs", async (req, res) => {
@@ -744,6 +758,119 @@ function normalizeBaseUrl(value, fallback) {
   return url;
 }
 
+function normalizeEndpointUrl(value, fallback) {
+  let url = String(value || fallback).trim();
+  if (url.startsWith("//")) url = `https:${url}`;
+  if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
+  return url.replace(/\/+$/, "");
+}
+
+function getCachedOrStaticMcpStatus() {
+  if (mcpProbeCache?.status && Date.now() - mcpProbeCache.checkedAtMs < 60_000) {
+    return mcpProbeCache.status;
+  }
+  return buildStaticMcpStatus();
+}
+
+function buildStaticMcpStatus() {
+  return {
+    id: "binance-agent-os-mcp",
+    label: "Binance Agent OS MCP transport",
+    configured: Boolean(BINANCE_MCP_ACCESS_TOKEN),
+    enabled: Boolean(BINANCE_MCP_ACCESS_TOKEN),
+    status: BINANCE_MCP_ACCESS_TOKEN ? "pending_validation" : "blocked_auth_required",
+    serverUrl: BINANCE_MCP_SERVER_URL,
+    protocol: "streamable_http",
+    auth: BINANCE_MCP_ACCESS_TOKEN ? "bearer_token_configured" : "oauth_token_required",
+    reason: BINANCE_MCP_ACCESS_TOKEN
+      ? "MCP token is configured but the live handshake has not been validated in this runtime cache yet."
+      : "Missing BINANCE_MCP_ACCESS_TOKEN. Binance Agent OS MCP returned 401 without authorization.",
+    docsUrl: "https://developers.binance.com/en/docs/agent-native/mcp-server/agentic"
+  };
+}
+
+async function probeBinanceMcp({ force = false } = {}) {
+  if (!force && mcpProbeCache?.status && Date.now() - mcpProbeCache.checkedAtMs < 60_000) {
+    return mcpProbeCache.status;
+  }
+
+  if (!BINANCE_MCP_ACCESS_TOKEN) {
+    const status = buildStaticMcpStatus();
+    mcpProbeCache = { checkedAtMs: Date.now(), status };
+    return status;
+  }
+
+  const client = new Client({
+    name: "oddiseus-clearing-layer",
+    version: PRODUCT_VERSION
+  });
+  const abortController = new AbortController();
+  const timeout = setTimeout(() => abortController.abort(), 8_000);
+
+  try {
+    const transport = new StreamableHTTPClientTransport(new URL(BINANCE_MCP_SERVER_URL), {
+      requestInit: {
+        headers: {
+          Authorization: `Bearer ${BINANCE_MCP_ACCESS_TOKEN}`
+        },
+        signal: abortController.signal
+      }
+    });
+
+    await client.connect(transport);
+    const tools = await client.listTools();
+    const toolNames = (tools.tools || []).map((tool) => tool.name).filter(Boolean);
+    const status = {
+      id: "binance-agent-os-mcp",
+      label: "Binance Agent OS MCP transport",
+      configured: true,
+      enabled: true,
+      status: "live",
+      serverUrl: BINANCE_MCP_SERVER_URL,
+      protocol: "streamable_http",
+      auth: "bearer_token_configured",
+      toolCount: toolNames.length,
+      sampledTools: toolNames.slice(0, 8),
+      checkedAt: new Date().toISOString(),
+      probeHash: hash({
+        serverUrl: BINANCE_MCP_SERVER_URL,
+        toolNames
+      }),
+      docsUrl: "https://developers.binance.com/en/docs/agent-native/mcp-server/agentic"
+    };
+    mcpProbeCache = { checkedAtMs: Date.now(), status };
+    return status;
+  } catch (err) {
+    const statusCode = err?.code || err?.status || null;
+    const authBlocked = statusCode === 401 || statusCode === 403;
+    const status = {
+      id: "binance-agent-os-mcp",
+      label: "Binance Agent OS MCP transport",
+      configured: true,
+      enabled: false,
+      status: authBlocked ? "blocked_auth_required" : "blocked",
+      serverUrl: BINANCE_MCP_SERVER_URL,
+      protocol: "streamable_http",
+      auth: "bearer_token_configured",
+      checkedAt: new Date().toISOString(),
+      statusCode,
+      reason: authBlocked
+        ? "Binance MCP rejected the configured token or requires additional OAuth authorization."
+        : err.message,
+      docsUrl: "https://developers.binance.com/en/docs/agent-native/mcp-server/agentic"
+    };
+    mcpProbeCache = { checkedAtMs: Date.now(), status };
+    return status;
+  } finally {
+    clearTimeout(timeout);
+    try {
+      await client.close();
+    } catch {
+      // No-op: failed handshakes may not create a closable MCP session.
+    }
+  }
+}
+
 function formatApprovalMessage(challenge) {
   return [
     "ODDISEUS Wallet Approval",
@@ -770,7 +897,7 @@ function formatApprovalMessage(challenge) {
   ].join("\n");
 }
 
-function buildRuntimeConfig() {
+function buildRuntimeConfig({ mcp } = {}) {
   const apiKeyPresent = Boolean(process.env.BINANCE_TESTNET_API_KEY);
   const apiSecretPresent = Boolean(process.env.BINANCE_TESTNET_API_SECRET);
   const testnetExecutionEnabled = process.env.ODDISEUS_ENABLE_TESTNET_EXECUTION === "true";
@@ -838,13 +965,7 @@ function buildRuntimeConfig() {
         enabled: b402Configured,
         status: b402Configured ? "live" : "not_configured"
       },
-      mcp: {
-        id: "binance-mcp-transport",
-        label: "Binance MCP execution transport",
-        configured: false,
-        enabled: false,
-        status: "not_configured"
-      },
+      mcp: mcp || getCachedOrStaticMcpStatus(),
       walletSignature: {
         id: "wallet-operator-signature",
         label: "Wallet approval signature",

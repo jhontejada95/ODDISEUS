@@ -803,6 +803,8 @@ function capabilityLabel(capability) {
   if (!capability) return "Config pending";
   if (capability.status === "live") return "Live";
   if (capability.status === "blocked") return "Blocked";
+  if (capability.status === "blocked_auth_required") return "Blocked: auth required";
+  if (capability.status === "pending_validation") return "Pending validation";
   return "Not configured";
 }
 
@@ -927,6 +929,13 @@ function getModuleRows(run, config) {
       duty: "Scores spread, funding, ADL state, and budget invariants",
       state: run?.riskAssessment ? "SCORED" : run?.stage === "risk" ? "SCORING" : "PENDING",
       tone: run?.riskAssessment ? "green" : run?.stage === "risk" ? "bronze" : ""
+    },
+    {
+      name: "MCP Transport",
+      id: integrations.mcp?.id || "mcp-config-pending",
+      duty: integrations.mcp?.label || "Waiting for backend MCP capability config",
+      state: capabilityLabel(integrations.mcp).toUpperCase(),
+      tone: integrations.mcp?.status === "live" ? "green" : integrations.mcp ? "bronze" : ""
     },
     {
       name: "Execution Adapter",
