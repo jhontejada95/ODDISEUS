@@ -72,6 +72,8 @@ In Vercel:
 
 The root `server.js` exports the Express app for local/Vercel compatibility. The `api/[...path].js` catch-all mounts the same Express app under `/api/*` when the project is imported with Vercel's Vite preset.
 
+`vercel.json` pins Functions to `gru1` (São Paulo, Brazil) because Binance may reject requests from US regions such as `iad1`. The frontend remains globally served by Vercel's CDN; the API functions should run from the configured region.
+
 ### 3. Add Vercel environment variables
 
 Set these in Vercel Project Settings → Environment Variables:

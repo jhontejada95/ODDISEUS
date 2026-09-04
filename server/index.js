@@ -47,6 +47,20 @@ const stageOrder = [
   "receipt"
 ];
 
+app.get("/api/health", (_req, res) => {
+  res.json({
+    ok: true,
+    service: "oddiseus",
+    runtime: process.env.VERCEL ? "vercel" : "local",
+    vercelRegion: process.env.VERCEL_REGION || null,
+    binanceSpotBaseUrl: TESTNET_BASE_URL,
+    binanceFuturesBaseUrl: FUTURES_TESTNET_BASE_URL,
+    testnetExecutionEnabled: process.env.ODDISEUS_ENABLE_TESTNET_EXECUTION === "true",
+    apiKeyPresent: Boolean(process.env.BINANCE_TESTNET_API_KEY),
+    apiSecretPresent: Boolean(process.env.BINANCE_TESTNET_API_SECRET)
+  });
+});
+
 app.post("/api/runs", (req, res) => {
   if (req.body?.action) {
     handleRunAction(req, res);
