@@ -126,7 +126,7 @@ function App() {
   const runAction = (action, extra = {}) =>
     mutate("/api/runs", {
       method: "POST",
-      body: JSON.stringify({ id: run.id, action, ...extra })
+      body: JSON.stringify({ id: run.id, run, action, ...extra })
     });
 
   return (

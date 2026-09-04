@@ -81,7 +81,7 @@ app.post("/api/runs", (req, res) => {
 });
 
 async function handleRunAction(req, res) {
-  const run = findRun(req.body?.id, res);
+  const run = findRunForAction(req, res);
   if (!run) return;
 
   try {
@@ -116,6 +116,32 @@ async function handleRunAction(req, res) {
     blockRun(run, run.stage, err.message);
     res.status(422).json({ run, error: err.message });
   }
+}
+
+function findRunForAction(req, res) {
+  const id = req.body?.id || req.body?.run?.id;
+  const existing = id ? runs.get(id) : null;
+  if (existing) return existing;
+
+  if (req.body?.run?.id && req.body.run.intent && Array.isArray(req.body.run.completedStages)) {
+    const restored = req.body.run;
+    runs.set(restored.id, restored);
+    restored.events ||= [];
+    restored.policyDecisions ||= [];
+    restored.paidData ||= [];
+    restored.events.push(event("RUN_RESTORED_FROM_CLIENT_STATE", {
+      runId: restored.id,
+      stage: restored.stage,
+      status: restored.status
+    }));
+    return restored;
+  }
+
+  res.status(404).json({
+    error:
+      "Run not found. In serverless deployments the client must send the current run state with each action."
+  });
+  return null;
 }
 
 app.get("/api/runs/:id", (req, res) => {
