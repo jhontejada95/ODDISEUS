@@ -14,14 +14,14 @@
     "test": "node --test"
   },
   "dependencies": {
+    "@upstash/redis": "^1.38.4",
     "@vitejs/plugin-react": "^5.0.2",
-    "vite": "^7.1.5",
-    "typescript": "^5.9.2",
+    "dotenv": "^17.2.1",
+    "express": "^5.1.0",
+    "lucide-react": "^0.542.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
-    "lucide-react": "^0.542.0",
-    "express": "^5.1.0",
-    "dotenv": "^17.2.1"
-  },
-  "devDependencies": {}
+    "typescript": "^5.9.2",
+    "vite": "^7.1.5"
+  }
 }

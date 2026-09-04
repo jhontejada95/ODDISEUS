@@ -110,13 +110,30 @@ Optional:
 
 ```text
 B402_TESTNET_ENDPOINT
+UPSTASH_REDIS_REST_URL
+UPSTASH_REDIS_REST_TOKEN
+ODDISEUS_ENABLE_WALLET_SIGNATURES=false
+ODDISEUS_ONCHAIN_ANCHOR_ENDPOINT
 ```
 
 Keep the deployment testnet-only. Do not add mainnet keys or real-fund credentials.
 
-### Serverless state note
+### Durable state
 
-The current MVP stores run state in memory. That is acceptable for a hackathon demo and short test sessions, but production infrastructure should move run state and receipts to durable storage such as Redis, Vercel KV, Postgres, or Supabase.
+ODDISEUS supports durable run and receipt storage through Upstash Redis REST. Install Upstash Redis from the Vercel Marketplace or add these variables manually:
+
+```text
+UPSTASH_REDIS_REST_URL
+UPSTASH_REDIS_REST_TOKEN
+```
+
+When those variables are present, `/api/config` reports persistence as `live` and the backend writes:
+
+- `oddiseus:run:<runId>`
+- `oddiseus:receipt:<runId>`
+- sorted index `oddiseus:runs`
+
+Without Redis, ODDISEUS keeps a serverless-safe fallback that restores run state from the client payload, but `/api/config` reports persistence as `not_configured` instead of pretending durable storage exists.
 
 ## Submission
 

@@ -3,12 +3,14 @@ import crypto from "node:crypto";
 import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { Redis } from "@upstash/redis";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..");
 
 const app = express();
 const runs = new Map();
+let redisClient = null;
 
 app.use(express.json({ limit: "1mb" }));
 
@@ -76,9 +78,9 @@ app.get("/api/config", (_req, res) => {
   res.json(buildRuntimeConfig());
 });
 
-app.post("/api/runs", (req, res) => {
+app.post("/api/runs", async (req, res) => {
   if (req.body?.action) {
-    handleRunAction(req, res);
+    await handleRunAction(req, res);
     return;
   }
 
@@ -109,12 +111,12 @@ app.post("/api/runs", (req, res) => {
     ]
   };
 
-  runs.set(id, run);
+  await saveRun(run);
   res.json({ run });
 });
 
 async function handleRunAction(req, res) {
-  const run = findRunForAction(req, res);
+  const run = await findRunForAction(req, res);
   if (!run) return;
 
   try {
@@ -122,24 +124,28 @@ async function handleRunAction(req, res) {
       if (run.status !== "complete" && run.status !== "blocked") {
         await advance(run);
       }
+      await saveRun(run);
       res.json({ run });
       return;
     }
 
     if (req.body.action === "approve") {
       approveRun(run);
+      await saveRun(run);
       res.json({ run });
       return;
     }
 
     if (req.body.action === "reject") {
       rejectRun(run, req.body?.reason);
+      await saveRun(run);
       res.json({ run });
       return;
     }
 
     if (req.body.action === "stop") {
       blockRun(run, run.stage, "Run stopped by human operator before execution finality.");
+      await saveRun(run);
       res.json({ run });
       return;
     }
@@ -147,13 +153,14 @@ async function handleRunAction(req, res) {
     res.status(400).json({ error: `Unknown run action: ${req.body.action}` });
   } catch (err) {
     blockRun(run, run.stage, err.message);
+    await saveRun(run);
     res.status(422).json({ run, error: err.message });
   }
 }
 
-function findRunForAction(req, res) {
+async function findRunForAction(req, res) {
   const id = req.body?.id || req.body?.run?.id;
-  const existing = id ? runs.get(id) : null;
+  const existing = id ? await loadRun(id) : null;
   if (existing) return existing;
 
   if (req.body?.run?.id && req.body.run.intent && Array.isArray(req.body.run.completedStages)) {
@@ -167,35 +174,38 @@ function findRunForAction(req, res) {
       stage: restored.stage,
       status: restored.status
     }));
+    await saveRun(restored);
     return restored;
   }
 
   res.status(404).json({
     error:
-      "Run not found. In serverless deployments the client must send the current run state with each action."
+      "Run not found in durable storage or local cache. If persistence is not configured, the client must send the current run state with each action."
   });
   return null;
 }
 
-app.get("/api/runs/:id", (req, res) => {
-  const run = findRun(req.params.id, res);
+app.get("/api/runs/:id", async (req, res) => {
+  const run = await findRun(req.params.id, res);
   if (!run) return;
   res.json({ run });
 });
 
-app.post("/api/runs/:id/approve", (req, res) => {
-  const run = findRun(req.params.id, res);
+app.post("/api/runs/:id/approve", async (req, res) => {
+  const run = await findRun(req.params.id, res);
   if (!run) return;
 
   approveRun(run);
+  await saveRun(run);
   res.json({ run });
 });
 
-app.post("/api/runs/:id/reject", (req, res) => {
-  const run = findRun(req.params.id, res);
+app.post("/api/runs/:id/reject", async (req, res) => {
+  const run = await findRun(req.params.id, res);
   if (!run) return;
 
   rejectRun(run, req.body?.reason);
+  await saveRun(run);
   res.json({ run });
 });
 
@@ -226,16 +236,17 @@ function rejectRun(run, reason) {
   blockRun(run, run.stage, run.approval.reason);
 }
 
-app.post("/api/runs/:id/stop", (req, res) => {
-  const run = findRun(req.params.id, res);
+app.post("/api/runs/:id/stop", async (req, res) => {
+  const run = await findRun(req.params.id, res);
   if (!run) return;
 
   blockRun(run, run.stage, "Run stopped by human operator before execution finality.");
+  await saveRun(run);
   res.json({ run });
 });
 
 app.post("/api/runs/:id/step", async (req, res) => {
-  const run = findRun(req.params.id, res);
+  const run = await findRun(req.params.id, res);
   if (!run) return;
 
   if (run.status === "complete" || run.status === "blocked") {
@@ -245,15 +256,17 @@ app.post("/api/runs/:id/step", async (req, res) => {
 
   try {
     await advance(run);
+    await saveRun(run);
     res.json({ run });
   } catch (err) {
     blockRun(run, run.stage, err.message);
+    await saveRun(run);
     res.status(422).json({ run, error: err.message });
   }
 });
 
-app.get("/api/runs/:id/receipt", (req, res) => {
-  const run = findRun(req.params.id, res);
+app.get("/api/runs/:id/receipt", async (req, res) => {
+  const run = await findRun(req.params.id, res);
   if (!run) return;
   if (!run.receipt) {
     res.status(404).json({ error: "Receipt is not ready yet." });
@@ -627,9 +640,7 @@ function buildRuntimeConfig() {
   const apiSecretPresent = Boolean(process.env.BINANCE_TESTNET_API_SECRET);
   const testnetExecutionEnabled = process.env.ODDISEUS_ENABLE_TESTNET_EXECUTION === "true";
   const b402Configured = Boolean(process.env.B402_TESTNET_ENDPOINT);
-  const persistenceConfigured = Boolean(
-    process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.KV_REST_API_URL
-  );
+  const persistenceConfigured = isDurablePersistenceConfigured();
   const walletSignatureConfigured = process.env.ODDISEUS_ENABLE_WALLET_SIGNATURES === "true";
   const onchainAnchoringConfigured = Boolean(process.env.ODDISEUS_ONCHAIN_ANCHOR_ENDPOINT);
 
@@ -717,7 +728,11 @@ function buildRuntimeConfig() {
         label: "Durable run and receipt storage",
         configured: persistenceConfigured,
         enabled: persistenceConfigured,
-        status: persistenceConfigured ? "live" : "not_configured"
+        status: persistenceConfigured ? "live" : "not_configured",
+        adapter:
+          process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL
+            ? "upstash-redis-rest"
+            : null
       }
     }
   };
@@ -746,13 +761,65 @@ function blockRun(run, stage, reason) {
   run.events.push(event("RUN_BLOCKED", { stage, reason }));
 }
 
-function findRun(id, res) {
-  const run = runs.get(id);
+async function findRun(id, res) {
+  const run = await loadRun(id);
   if (!run) {
     res.status(404).json({ error: "Run not found." });
     return null;
   }
   return run;
+}
+
+async function loadRun(id) {
+  const cached = runs.get(id);
+  if (cached) return cached;
+
+  const redis = getRedisClient();
+  if (!redis) return null;
+
+  const persisted = await redis.get(runKey(id));
+  if (!persisted) return null;
+  runs.set(id, persisted);
+  return persisted;
+}
+
+async function saveRun(run) {
+  runs.set(run.id, run);
+
+  const redis = getRedisClient();
+  if (!redis) return;
+
+  await redis.set(runKey(run.id), run);
+  await redis.zadd("oddiseus:runs", { score: Date.now(), member: run.id });
+  if (run.receipt) {
+    await redis.set(receiptKey(run.id), run.receipt);
+  }
+}
+
+function getRedisClient() {
+  const url = process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+  if (!url || !token) return null;
+
+  if (!redisClient) {
+    redisClient = new Redis({ url, token });
+  }
+  return redisClient;
+}
+
+function isDurablePersistenceConfigured() {
+  return Boolean(
+    (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN) ||
+      (process.env.KV_REST_API_URL && process.env.KV_REST_API_TOKEN)
+  );
+}
+
+function runKey(id) {
+  return `oddiseus:run:${id}`;
+}
+
+function receiptKey(id) {
+  return `oddiseus:receipt:${id}`;
 }
 
 function event(type, payload) {
