@@ -123,6 +123,11 @@ function App() {
   const needsApproval = run?.status === "needs_approval";
   const isTerminal = run?.status === "complete" || run?.status === "blocked";
   const progress = Math.round(((run?.completedStages?.length || 0) / STAGES.length) * 100);
+  const runAction = (action, extra = {}) =>
+    mutate("/api/runs", {
+      method: "POST",
+      body: JSON.stringify({ id: run.id, action, ...extra })
+    });
 
   return (
     <main className="terminal-shell">
@@ -135,11 +140,11 @@ function App() {
           isTerminal={isTerminal}
           receiptHref={receiptHref}
           run={run}
-          onAdvance={() => mutate(`/api/runs/${run.id}/step`, { method: "POST" })}
-          onApprove={() => mutate(`/api/runs/${run.id}/approve`, { method: "POST" })}
-          onReject={() => mutate(`/api/runs/${run.id}/reject`, { method: "POST" })}
+          onAdvance={() => runAction("step")}
+          onApprove={() => runAction("approve")}
+          onReject={() => runAction("reject")}
           onStart={startRun}
-          onStop={() => mutate(`/api/runs/${run.id}/stop`, { method: "POST" })}
+          onStop={() => runAction("stop")}
         />
 
         {error ? <AlertStrip message={error} /> : null}

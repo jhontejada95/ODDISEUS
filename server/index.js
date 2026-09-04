@@ -44,6 +44,11 @@ const stageOrder = [
 ];
 
 app.post("/api/runs", (req, res) => {
+  if (req.body?.action) {
+    handleRunAction(req, res);
+    return;
+  }
+
   const id = `run_${Date.now().toString(36)}_${crypto.randomBytes(4).toString("hex")}`;
   const intent = {
     text: String(req.body?.intent || "Evaluate a BTCUSDT testnet micro-action."),
@@ -75,6 +80,44 @@ app.post("/api/runs", (req, res) => {
   res.json({ run });
 });
 
+async function handleRunAction(req, res) {
+  const run = findRun(req.body?.id, res);
+  if (!run) return;
+
+  try {
+    if (req.body.action === "step") {
+      if (run.status !== "complete" && run.status !== "blocked") {
+        await advance(run);
+      }
+      res.json({ run });
+      return;
+    }
+
+    if (req.body.action === "approve") {
+      approveRun(run);
+      res.json({ run });
+      return;
+    }
+
+    if (req.body.action === "reject") {
+      rejectRun(run, req.body?.reason);
+      res.json({ run });
+      return;
+    }
+
+    if (req.body.action === "stop") {
+      blockRun(run, run.stage, "Run stopped by human operator before execution finality.");
+      res.json({ run });
+      return;
+    }
+
+    res.status(400).json({ error: `Unknown run action: ${req.body.action}` });
+  } catch (err) {
+    blockRun(run, run.stage, err.message);
+    res.status(422).json({ run, error: err.message });
+  }
+}
+
 app.get("/api/runs/:id", (req, res) => {
   const run = findRun(req.params.id, res);
   if (!run) return;
@@ -85,6 +128,19 @@ app.post("/api/runs/:id/approve", (req, res) => {
   const run = findRun(req.params.id, res);
   if (!run) return;
 
+  approveRun(run);
+  res.json({ run });
+});
+
+app.post("/api/runs/:id/reject", (req, res) => {
+  const run = findRun(req.params.id, res);
+  if (!run) return;
+
+  rejectRun(run, req.body?.reason);
+  res.json({ run });
+});
+
+function approveRun(run) {
   run.approval = {
     approved: true,
     approvedAt: new Date().toISOString(),
@@ -98,24 +154,18 @@ app.post("/api/runs/:id/approve", (req, res) => {
     run.stage = "execution";
     run.status = "running";
   }
+}
 
-  res.json({ run });
-});
-
-app.post("/api/runs/:id/reject", (req, res) => {
-  const run = findRun(req.params.id, res);
-  if (!run) return;
-
+function rejectRun(run, reason) {
   run.approval = {
     approved: false,
     rejectedAt: new Date().toISOString(),
     approver: "human-operator",
-    reason: String(req.body?.reason || "Human operator rejected sovereign clearance."),
+    reason: String(reason || "Human operator rejected sovereign clearance."),
     approvalHash: hash({ runId: run.id, stage: run.stage, rejected: true, at: Date.now() })
   };
   blockRun(run, run.stage, run.approval.reason);
-  res.json({ run });
-});
+}
 
 app.post("/api/runs/:id/stop", (req, res) => {
   const run = findRun(req.params.id, res);
