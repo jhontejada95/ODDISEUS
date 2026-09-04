@@ -14,10 +14,14 @@ app.use(express.json({ limit: "1mb" }));
 
 const PORT = Number(process.env.PORT || 5173);
 const DEFAULT_SYMBOL = process.env.ODDISEUS_DEFAULT_SYMBOL || "BTCUSDT";
-const TESTNET_BASE_URL =
-  process.env.BINANCE_TESTNET_BASE_URL || "https://testnet.binance.vision";
-const FUTURES_TESTNET_BASE_URL =
-  process.env.BINANCE_FUTURES_TESTNET_BASE_URL || "https://demo-fapi.binance.com";
+const TESTNET_BASE_URL = normalizeBaseUrl(
+  process.env.BINANCE_TESTNET_BASE_URL,
+  "https://testnet.binance.vision"
+);
+const FUTURES_TESTNET_BASE_URL = normalizeBaseUrl(
+  process.env.BINANCE_FUTURES_TESTNET_BASE_URL,
+  "https://demo-fapi.binance.com"
+);
 
 const policy = {
   maxRunBudgetUsdt: 10,
@@ -576,6 +580,15 @@ function normalizeAdlRisk(payload) {
   if (max >= 4) return "HIGH";
   if (max >= 2) return "MEDIUM";
   return "LOW";
+}
+
+function normalizeBaseUrl(value, fallback) {
+  let url = String(value || fallback).trim();
+  if (url.startsWith("//")) url = `https:${url}`;
+  if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
+  url = url.replace(/\/+$/, "");
+  url = url.replace(/\/api$/i, "");
+  return url;
 }
 
 function decision(decisionValue, action, reason) {
