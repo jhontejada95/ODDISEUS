@@ -2,12 +2,29 @@
 
 ODDISEUS is a testnet clearing layer for financial AI agents built for the Binance Agent OS Mini Hackathon, Track B.
 
-It is not a trading bot. It is infrastructure for agentic finance: agents can request market reads, paid intelligence, policy checks, human approval, Binance testnet execution, receipts, and reputation updates.
+It is not a trading bot. It is infrastructure for agentic finance: agents can request live market reads, optional external intelligence, policy checks, human approval, Binance Spot Testnet execution, receipts, and reputation updates.
+
+## No-Mock Policy
+
+ODDISEUS must not present simulated infrastructure as real infrastructure.
+
+Current real lanes:
+
+- Live Binance Spot/Futures Testnet market reads.
+- Signed Binance Spot Testnet order placement when the testnet API key, secret, and execution flag are configured.
+- Deterministic risk and policy checks computed from the captured run state.
+- Operator approval hash and verifiable receipt hash.
+
+Explicitly not claimed until configured:
+
+- B402/x402 paid-intelligence settlement. If `B402_TESTNET_ENDPOINT` is missing, the run records `not_configured` and does not fabricate paid data.
+- MCP execution transport. The current execution adapter is Binance Spot Testnet REST.
+- Wallet signatures, on-chain anchoring, or mainnet execution.
 
 ## Core Demo Flow
 
 ```text
-intent -> Binance testnet data -> paid intelligence -> risk agent -> policy engine -> approval -> testnet execution -> receipt
+intent -> Binance testnet data -> external-intel connector check -> risk engine -> policy engine -> approval -> testnet execution -> receipt
 ```
 
 ## Testnet-Only Rule

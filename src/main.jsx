@@ -33,29 +33,22 @@ const STAGES = [
 ];
 
 const stageMeta = {
-  intent: ["Intent", "Verified"],
-  market: ["Market Data", "Ingested"],
-  "paid-data": ["Paid Intel", "Settled"],
-  risk: ["Risk Check", "Scored"],
-  policy: ["Policy Check", "Evaluated"],
-  approval: ["Human Approval", "Gate Active"],
-  execution: ["Execution", "Pending"],
-  receipt: ["Receipt", "Standby"]
+  intent: "Intent",
+  market: "Market Data",
+  "paid-data": "External Intel",
+  risk: "Risk Check",
+  policy: "Policy Check",
+  approval: "Human Approval",
+  execution: "Execution",
+  receipt: "Receipt"
 };
 
 const navItems = [
   ["console", "Console"],
   ["policy", "Policy Matrix"],
   ["receipts", "Receipts"],
-  ["agents", "Agent Swarm"],
+  ["agents", "Execution Modules"],
   ["settings", "Settings"]
-];
-
-const agentRows = [
-  ["Research Agent", "Alpha-4", "Binance reads, B402/x402 intelligence", "IDLE"],
-  ["Risk Agent", "Aegis-Risk", "Spread, funding, ADL, exposure invariants", "SCORING"],
-  ["Execution Agent", "Hermes-v0.9", "Binance Spot Testnet adapter", "ARMED"],
-  ["Clearing Engine", "ODDISEUS Core", "Intent → execution → proof governance", "AWAITING SIG"]
 ];
 
 function App() {
@@ -96,7 +89,7 @@ function App() {
         method: "POST",
         body: JSON.stringify({
           intent:
-            "Clear a BTCUSDT testnet micro-action through Binance MCP-compatible execution, paid intelligence, deterministic risk policy, human clearance, and a verifiable receipt.",
+            "Clear a BTCUSDT testnet micro-action through live Binance Testnet data, deterministic risk policy, human approval, real testnet execution, and a verifiable receipt. External paid-intelligence is used only when a real B402/x402 testnet endpoint is configured.",
           symbol: "BTCUSDT",
           quoteBudgetUsdt: 10
         })
@@ -158,9 +151,9 @@ function App() {
 
       <footer className="terminal-footer">
         <span>ODDISEUS CLEARING ENGINE © 2026</span>
-        <span>SOVEREIGN SETTLEMENT KERNEL</span>
-        <strong>LATENCY: 14ms</strong>
-        <em>CRYPTOGRAPHIC INVARIANT VERIFIED</em>
+        <span>TESTNET-ONLY CLEARING KERNEL</span>
+        <strong>NO MOCK EXECUTION</strong>
+        <em>UNCONNECTED LANES ARE MARKED, NOT FABRICATED</em>
       </footer>
     </main>
   );
@@ -189,7 +182,7 @@ function TopBar({ activeView, setActiveView }) {
       </nav>
 
       <div className="telemetry-bar">
-        <StatusPill label="NET" value="BSC TESTNET" tone="green" />
+        <StatusPill label="NET" value="BINANCE TESTNET" tone="green" />
         <StatusPill label="POLICY" value="ENFORCING" />
         <StatusPill label="CAP" value="$10 USDT" />
         <StatusPill label="UTC" value={new Date().toISOString().slice(11, 19)} />
@@ -217,7 +210,7 @@ function RunBanner({
       : run?.status === "blocked"
         ? "RUN BLOCKED WITH PROOF"
         : run?.status === "complete"
-          ? "VOYAGE SETTLED"
+          ? "RECEIPT CREATED"
           : "CLEARING ROUTE ACTIVE";
 
   return (
@@ -230,7 +223,7 @@ function RunBanner({
       <div className="run-facts">
         <KeyValue label="PAIR" value={run?.intent?.symbol || "BTCUSDT"} />
         <KeyValue label="BUDGET" value={`${run?.intent?.quoteBudgetUsdt || 10} USDT`} />
-        <KeyValue label="EXECUTION" value="TESTNET ONLY" tone="green" />
+        <KeyValue label="EXECUTION" value="REAL TESTNET" tone="green" />
         <KeyValue label="STATE" value={actionLine} tone={needsApproval ? "amber" : undefined} />
       </div>
 
@@ -290,14 +283,16 @@ function Timeline({ run }) {
   return (
     <section className="timeline">
       {STAGES.map((stage, index) => {
-        const [label, sublabel] = stageMeta[stage];
+        const label = stageMeta[stage];
         const done = completed.includes(stage);
         const active = current === stage;
+        const sublabel = getStageSublabel(run, stage, done, active);
+        const tone = getStageTone(run, stage);
         return (
-          <div className={`timeline-step ${done ? "done" : ""} ${active ? "active" : ""}`} key={stage}>
+          <div className={`timeline-step ${done ? "done" : ""} ${active ? "active" : ""} ${tone}`} key={stage}>
             <i>{done ? <Check size={14} /> : index + 1}</i>
             <strong>{index + 1}. {label}</strong>
-            <span>{done ? sublabel : active ? sublabel : "Pending"}</span>
+            <span>{sublabel}</span>
           </div>
         );
       })}
@@ -336,7 +331,7 @@ function MarketData({ run }) {
         <Metric label="ADL Risk State" value={market?.futures?.adlRisk || "--"} tone="green" />
         <Metric label="Captured" value={market?.capturedAt ? market.capturedAt.slice(11, 19) : "--"} />
       </div>
-      <Sparkline />
+      <DataProof market={market} />
       <HashLine label="Snapshot Hash" value={market?.snapshotHash} />
     </Panel>
   );
@@ -345,7 +340,7 @@ function MarketData({ run }) {
 function PaidIntelligence({ run }) {
   const item = run?.paidData?.[0];
   return (
-    <Panel icon={CircleDollarSign} title="Paid Intelligence" meta="x402 / B402 protocol">
+    <Panel icon={CircleDollarSign} title="External Intelligence" meta={paidIntelMeta(item)}>
       {item ? (
         <>
           <div className="data-card">
@@ -353,7 +348,7 @@ function PaidIntelligence({ run }) {
             <KeyValue label="Incurred Cost" value={`${item.priceUsdt || 0} USDT`} tone="bronze" />
             <KeyValue
               label="Status"
-              value={item.status.replaceAll("_", " ")}
+              value={readableStatus(item.status)}
               tone={item.status === "acquired" ? "green" : "amber"}
             />
           </div>
@@ -361,7 +356,7 @@ function PaidIntelligence({ run }) {
           <HashLine label="Payload Hash" value={item.payloadHash} />
         </>
       ) : (
-        <EmptyState icon={CircleDollarSign} text="Waiting for a paid-intelligence request." />
+        <EmptyState icon={CircleDollarSign} text="Waiting for a real external-intelligence connector check." />
       )}
     </Panel>
   );
@@ -381,14 +376,14 @@ function HumanGate({ run }) {
           ? "EXECUTION HALTED FOR SOVEREIGN CLEARANCE"
           : isBlocked
             ? "SOVEREIGN CLEARANCE REFUSED"
-            : "NO HUMAN SIGNATURE REQUIRED AT THIS MOMENT"}
+            : "OPERATOR APPROVAL NOT REQUESTED YET"}
       </p>
       <div className="payload-box">
         <span>PROPOSED ACTION PAYLOAD</span>
         <strong>
           Place <em>MARKET BUY</em> for <b>{executionValue.toFixed(2)} USDT</b> on {run?.intent?.symbol || "BTCUSDT"}
         </strong>
-        <small>TESTNET-ONLY ADAPTER READY</small>
+        <small>BINANCE SPOT TESTNET ADAPTER</small>
       </div>
       <div className="metric-grid three">
         <Metric label="Max Slippage" value="< 12 bps" />
@@ -396,19 +391,20 @@ function HumanGate({ run }) {
         <Metric label="Policy Ref" value="POL-HUM-08" />
       </div>
       {run?.approval ? (
-        <HashLine label={run.approval.approved ? "Approval Hash" : "Rejection Hash"} value={run.approval.approvalHash} />
+        <HashLine label={run.approval.approved ? "Operator Approval Hash" : "Operator Rejection Hash"} value={run.approval.approvalHash} />
       ) : null}
     </Panel>
   );
 }
 
 function AgentSwarm({ run }) {
+  const moduleRows = getModuleRows(run);
   return (
-    <Panel icon={Bot} title="Agent Swarm Status" meta={`${agentRows.length} active entities`}>
+    <Panel icon={Bot} title="Execution Modules" meta={`${moduleRows.length} stateful lanes`}>
       <div className="agent-table">
-        {agentRows.map(([name, id, duty, state], index) => (
+        {moduleRows.map(({ duty, id, name, state, tone }) => (
           <div className="agent-row" key={id}>
-            <i className={index === 1 ? "green" : index === 2 ? "bronze" : ""} />
+            <i className={tone} />
             <strong>{name}</strong>
             <span>{id}</span>
             <p>{duty}</p>
@@ -436,7 +432,7 @@ function PolicyMatrix({ run }) {
     ? decisions
     : [
         { id: "pol-01", decision: "QUEUED", action: "READ_MARKET", reason: "Allowed symbol and live market read." },
-        { id: "pol-02", decision: "QUEUED", action: "BUY_DATA", reason: "Spend capped by paid intelligence policy." },
+        { id: "pol-02", decision: "QUEUED", action: "EXTERNAL_INTEL", reason: "Only runs if a real B402/x402 endpoint is configured." },
         { id: "pol-03", decision: "QUEUED", action: "TESTNET_SPOT", reason: "Human approval required before dispatch." }
       ];
 
@@ -460,8 +456,8 @@ function ClearingLog({ run, progress }) {
     ["system", "ODDISEUS clearing kernel online"],
     ["intent", `locked ${run?.intent?.symbol || "BTCUSDT"} / ${run?.intent?.quoteBudgetUsdt || 10} USDT / testnet`],
     ["market", run?.marketSnapshot ? `captured ${run.marketSnapshot.snapshotHash}` : "awaiting Binance market state"],
-    ["data", run?.paidData?.[0] ? `paid-data ${run.paidData[0].status}` : "paid-data lane pending"],
-    ["risk", run?.riskAssessment ? `${run.riskAssessment.status} spread=${run.riskAssessment.spreadBps}` : "risk agent queued"],
+    ["data", run?.paidData?.[0] ? `external-intel ${run.paidData[0].status}` : "external-intel connector pending"],
+    ["risk", run?.riskAssessment ? `${run.riskAssessment.status} spread=${run.riskAssessment.spreadBps}` : "risk engine queued"],
     ["policy", run?.policyDecisions?.length ? `${run.policyDecisions.length} policy decisions emitted` : "policy matrix queued"],
     ["execution", run?.execution ? `${run.execution.status} ${run.execution.blockedReason || run.execution.orderId || ""}` : "testnet adapter armed"],
     ["receipt", run?.receipt ? `closed ${run.receipt.receiptHash}` : `route clearance ${progress}%`]
@@ -531,8 +527,8 @@ function SettingsView() {
           <Setting label="Mainnet Execution" value="Disabled" locked danger />
           <Setting label="Withdrawals" value="Denied by invariant" locked danger />
           <Setting label="Max Run Budget" value="10 USDT" />
-          <Setting label="Paid Data Cap" value="0.25 USDT" />
-          <Setting label="Human Approval" value="Required for execution" locked />
+          <Setting label="External Intel" value="B402/x402 only if endpoint exists" />
+          <Setting label="Human Approval" value="Operator click required for execution" locked />
         </div>
       </Panel>
     </section>
@@ -609,13 +605,15 @@ function EmptyState({ icon: Icon, text }) {
   );
 }
 
-function Sparkline() {
+function DataProof({ market }) {
   return (
-    <div className="sparkline">
-      <span>15m Order Flow Trend</span>
-      <svg fill="none" preserveAspectRatio="none" viewBox="0 0 100 20">
-        <path d="M0,15 L14,12 L28,16 L42,9 L56,11 L70,4 L84,6 L100,2" />
-      </svg>
+    <div className="data-proof">
+      <span>Live Source Proof</span>
+      <p>
+        {market
+          ? `Captured ${market.source} at ${market.capturedAt}. No synthetic charting or fabricated order-flow trend is rendered.`
+          : "No market payload captured yet. ODDISEUS waits for Binance Testnet before showing data."}
+      </p>
     </div>
   );
 }
@@ -639,6 +637,104 @@ function formatMoney(value) {
 
 function readableStatus(status) {
   return String(status || "booting").replaceAll("_", " ");
+}
+
+function paidIntelMeta(item) {
+  if (!item) return "connector pending";
+  if (item.status === "acquired") return "real B402/x402 response";
+  if (item.status === "not_configured" || item.status === "blocked_external_not_configured") return "not configured";
+  return "blocked or challenged";
+}
+
+function getStageSublabel(run, stage, done, active) {
+  if (!run) return stage === "intent" ? "BOOTING" : "PENDING";
+  const item = run.paidData?.[0];
+  const execution = run.execution;
+
+  if (stage === "intent") return done || active ? "VERIFIED" : "PENDING";
+  if (stage === "market") return run.marketSnapshot ? "LIVE CAPTURED" : active ? "READING LIVE" : "PENDING";
+  if (stage === "paid-data") {
+    if (item?.status === "acquired") return "ACQUIRED";
+    if (item?.status === "not_configured" || item?.status === "blocked_external_not_configured") return "NOT CONFIGURED";
+    if (item) return "BLOCKED";
+    return active ? "CHECKING" : "PENDING";
+  }
+  if (stage === "risk") return run.riskAssessment ? run.riskAssessment.status.toUpperCase() : active ? "SCORING" : "PENDING";
+  if (stage === "policy") return run.policyDecisions?.length ? "EVALUATED" : active ? "EVALUATING" : "PENDING";
+  if (stage === "approval") {
+    if (run.approval?.approved) return "OPERATOR APPROVED";
+    if (run.approval?.approved === false) return "REJECTED";
+    return active ? "ACTION REQUIRED" : "PENDING";
+  }
+  if (stage === "execution") {
+    if (execution?.status === "testnet_executed") return "TESTNET EXECUTED";
+    if (execution?.status === "blocked") return "BLOCKED";
+    return active ? "READY" : "PENDING";
+  }
+  if (stage === "receipt") return run.receipt ? run.receipt.outcome : active ? "BUILDING" : "STANDBY";
+  return done ? "DONE" : active ? "ACTIVE" : "PENDING";
+}
+
+function getStageTone(run, stage) {
+  const item = run?.paidData?.[0];
+  if (stage === "paid-data" && item && item.status !== "acquired") return "warn";
+  if (stage === "execution" && run?.execution?.status === "blocked") return "warn";
+  return "";
+}
+
+function getModuleRows(run) {
+  const item = run?.paidData?.[0];
+  const externalIntelState =
+    item?.status === "acquired"
+      ? "ACQUIRED"
+      : item?.status
+        ? "NOT CONFIGURED"
+        : run?.stage === "paid-data"
+          ? "CHECKING"
+          : "PENDING";
+
+  return [
+    {
+      name: "Market Reader",
+      id: "binance-testnet-read",
+      duty: "Reads live Spot/Futures Testnet market payloads",
+      state: run?.marketSnapshot ? "CAPTURED" : run?.stage === "market" ? "READING" : "PENDING",
+      tone: run?.marketSnapshot ? "green" : run?.stage === "market" ? "bronze" : ""
+    },
+    {
+      name: "External Intel Connector",
+      id: "b402-x402-endpoint",
+      duty: "Calls a configured B402/x402 testnet endpoint only if present",
+      state: externalIntelState,
+      tone: item?.status === "acquired" ? "green" : item?.status ? "bronze" : ""
+    },
+    {
+      name: "Risk Policy Engine",
+      id: "deterministic-risk-policy",
+      duty: "Scores spread, funding, ADL state, and budget invariants",
+      state: run?.riskAssessment ? "SCORED" : run?.stage === "risk" ? "SCORING" : "PENDING",
+      tone: run?.riskAssessment ? "green" : run?.stage === "risk" ? "bronze" : ""
+    },
+    {
+      name: "Execution Adapter",
+      id: "binance-spot-testnet-order",
+      duty: "Places a signed Spot Testnet order after operator approval",
+      state:
+        run?.execution?.status === "testnet_executed"
+          ? "EXECUTED"
+          : run?.execution?.status === "blocked"
+            ? "BLOCKED"
+            : run?.stage === "execution" || run?.stage === "approval"
+              ? "ARMED"
+              : "PENDING",
+      tone:
+        run?.execution?.status === "testnet_executed"
+          ? "green"
+          : run?.execution?.status === "blocked" || run?.stage === "execution" || run?.stage === "approval"
+            ? "bronze"
+            : ""
+    }
+  ];
 }
 
 function shortId(id) {

@@ -212,7 +212,7 @@ Initial policy schema:
   "maxRunBudgetUsdt": "10.00",
   "maxPaidDataUsdt": "0.25",
   "allowedSymbols": ["BTCUSDT", "ETHUSDT", "BNBUSDT"],
-  "allowedActions": ["READ_MARKET", "BUY_DATA", "TESTNET_SPOT", "TESTNET_CONVERT"],
+  "allowedActions": ["READ_MARKET", "EXTERNAL_INTEL", "TESTNET_SPOT", "TESTNET_CONVERT"],
   "realExecutionRequiresApproval": true,
   "maxSpreadBps": 12,
   "maxFundingRateAbs": "0.0005",

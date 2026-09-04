@@ -27,7 +27,7 @@ const policy = {
   maxRunBudgetUsdt: 10,
   maxPaidDataUsdt: 0.25,
   allowedSymbols: ["BTCUSDT", "ETHUSDT", "BNBUSDT"],
-  allowedActions: ["READ_MARKET", "BUY_DATA", "TESTNET_SPOT"],
+  allowedActions: ["READ_MARKET", "EXTERNAL_INTEL", "TESTNET_SPOT"],
   realExecutionRequiresApproval: true,
   maxSpreadBps: 12,
   maxFundingRateAbs: 0.0005,
@@ -53,8 +53,12 @@ app.get("/api/health", (_req, res) => {
     service: "oddiseus",
     runtime: process.env.VERCEL ? "vercel" : "local",
     vercelRegion: process.env.VERCEL_REGION || null,
+    truthMode: "fail_closed_no_mock",
     binanceSpotBaseUrl: TESTNET_BASE_URL,
     binanceFuturesBaseUrl: FUTURES_TESTNET_BASE_URL,
+    executionAdapter: "binance-spot-testnet-rest",
+    mcpExecutionAdapterConfigured: false,
+    b402EndpointConfigured: Boolean(process.env.B402_TESTNET_ENDPOINT),
     testnetExecutionEnabled: process.env.ODDISEUS_ENABLE_TESTNET_EXECUTION === "true",
     apiKeyPresent: Boolean(process.env.BINANCE_TESTNET_API_KEY),
     apiSecretPresent: Boolean(process.env.BINANCE_TESTNET_API_SECRET)
@@ -279,7 +283,7 @@ async function advance(run) {
   if (run.stage === "paid-data") {
     const paidData = await requestPaidData(run);
     run.paidData.push(paidData);
-    run.events.push(event("PAID_DATA_ACQUIRED", paidData));
+    run.events.push(event("EXTERNAL_INTEL_CHECKED", paidData));
     completeStage(run, "paid-data");
     run.stage = "risk";
     return;
@@ -381,11 +385,11 @@ async function requestPaidData(run) {
   if (!merchant) {
     return {
       id: eventId(),
-      status: "blocked_external_not_configured",
+      status: "not_configured",
       merchant: "B402/x402 testnet endpoint",
       priceUsdt: 0,
       summary:
-        "External paid-intelligence endpoint is not configured yet. ODDISEUS records the missing dependency instead of pretending a payment happened.",
+        "No real B402/x402 testnet endpoint is configured. ODDISEUS records the dependency gap and does not fabricate paid intelligence.",
       payloadHash: hash({ runId: run.id, missing: "B402_TESTNET_ENDPOINT" })
     };
   }
@@ -440,18 +444,18 @@ function evaluatePolicy(run) {
 
   if (paidData?.priceUsdt > policy.maxPaidDataUsdt) {
     decisions.push(
-      decision("DENY", "BUY_DATA", `Paid data price exceeds ${policy.maxPaidDataUsdt} USDT cap.`)
+      decision("DENY", "EXTERNAL_INTEL", `External intelligence price exceeds ${policy.maxPaidDataUsdt} USDT cap.`)
     );
-  } else if (paidData?.status === "blocked_external_not_configured") {
+  } else if (paidData?.status === "not_configured" || paidData?.status === "blocked_external_not_configured") {
     decisions.push(
       decision(
-        "ESCALATE",
-        "BUY_DATA",
-        "B402/x402 testnet endpoint is not configured; receipt records the dependency gap."
+        "SKIP",
+        "EXTERNAL_INTEL",
+        "B402/x402 testnet endpoint is not configured; no external intelligence is claimed or fabricated."
       )
     );
   } else {
-    decisions.push(decision("ALLOW", "BUY_DATA", "Paid data spend is inside policy cap."));
+    decisions.push(decision("ALLOW", "EXTERNAL_INTEL", "External intelligence spend is inside policy cap."));
   }
 
   if (risk?.flags?.length) {
@@ -493,7 +497,7 @@ async function executeTestnetOrder(run) {
   const result = await signedRequest("/api/v3/order", payload, apiKey, apiSecret);
   return {
     status: "testnet_executed",
-    adapter: "Binance Spot Testnet REST/MCP-compatible execution adapter",
+    adapter: "Binance Spot Testnet REST execution adapter",
     action: "MARKET_BUY",
     symbol: run.intent.symbol,
     quoteBudgetUsdt: run.intent.quoteBudgetUsdt,
@@ -542,8 +546,10 @@ function buildReputation(run) {
   return [
     {
       agentId: "research-agent",
-      role: "Research",
-      summary: `Collected Binance testnet market data and requested paid intelligence. Outcome: ${outcome}.`
+      role: "Market Reader",
+      summary: `Collected live Binance testnet market data. External intelligence status: ${
+        run.paidData?.[0]?.status || "pending"
+      }. Outcome: ${outcome}.`
     },
     {
       agentId: "risk-agent",
