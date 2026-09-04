@@ -70,7 +70,7 @@ In Vercel:
    - Build command: `npm run build`
    - Output directory: `dist`
 
-The root `server.js` exports the Express app so Vercel can serve the API routes and the built frontend.
+The root `server.js` exports the Express app for local/Vercel compatibility. The `api/[...path].js` catch-all mounts the same Express app under `/api/*` when the project is imported with Vercel's Vite preset.
 
 ### 3. Add Vercel environment variables
 
