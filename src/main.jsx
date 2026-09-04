@@ -53,6 +53,7 @@ const navItems = [
 
 function App() {
   const [run, setRun] = useState(null);
+  const [config, setConfig] = useState(null);
   const [activeView, setActiveView] = useState("console");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -81,17 +82,20 @@ function App() {
     }
   }
 
-  async function startRun() {
+  async function startRun(runtimeConfig = config) {
+    if (!runtimeConfig) {
+      setError("Runtime config is not loaded; ODDISEUS will not start a run from guessed values.");
+      return;
+    }
     setLoading(true);
     setError("");
     try {
       const payload = await call("/api/runs", {
         method: "POST",
         body: JSON.stringify({
-          intent:
-            "Clear a BTCUSDT testnet micro-action through live Binance Testnet data, deterministic risk policy, human approval, real testnet execution, and a verifiable receipt. External paid-intelligence is used only when a real B402/x402 testnet endpoint is configured.",
-          symbol: "BTCUSDT",
-          quoteBudgetUsdt: 10
+          intent: runtimeConfig.defaults.intentText,
+          symbol: runtimeConfig.defaults.symbol,
+          quoteBudgetUsdt: runtimeConfig.defaults.quoteBudgetUsdt
         })
       });
       setRun(payload.run);
@@ -103,7 +107,36 @@ function App() {
   }
 
   useEffect(() => {
-    startRun();
+    let cancelled = false;
+
+    async function boot() {
+      setLoading(true);
+      setError("");
+      try {
+        const runtimeConfig = await call("/api/config");
+        if (cancelled) return;
+        setConfig(runtimeConfig);
+
+        const payload = await call("/api/runs", {
+          method: "POST",
+          body: JSON.stringify({
+            intent: runtimeConfig.defaults.intentText,
+            symbol: runtimeConfig.defaults.symbol,
+            quoteBudgetUsdt: runtimeConfig.defaults.quoteBudgetUsdt
+          })
+        });
+        if (!cancelled) setRun(payload.run);
+      } catch (err) {
+        if (!cancelled) setError(err.message);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    boot();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const receiptHref = useMemo(() => {
@@ -124,10 +157,11 @@ function App() {
 
   return (
     <main className="terminal-shell">
-      <TopBar activeView={activeView} setActiveView={setActiveView} />
+      <TopBar activeView={activeView} config={config} setActiveView={setActiveView} />
 
       <section className="terminal-body">
         <RunBanner
+          config={config}
           loading={loading}
           needsApproval={needsApproval}
           isTerminal={isTerminal}
@@ -136,17 +170,17 @@ function App() {
           onAdvance={() => runAction("step")}
           onApprove={() => runAction("approve")}
           onReject={() => runAction("reject")}
-          onStart={startRun}
+          onStart={() => startRun(config)}
           onStop={() => runAction("stop")}
         />
 
         {error ? <AlertStrip message={error} /> : null}
 
-        {activeView === "console" ? <ConsoleView run={run} progress={progress} /> : null}
-        {activeView === "policy" ? <PolicyView run={run} /> : null}
+        {activeView === "console" ? <ConsoleView config={config} run={run} progress={progress} /> : null}
+        {activeView === "policy" ? <PolicyView config={config} run={run} /> : null}
         {activeView === "receipts" ? <ReceiptsView run={run} receiptHref={receiptHref} /> : null}
-        {activeView === "agents" ? <AgentsView run={run} /> : null}
-        {activeView === "settings" ? <SettingsView /> : null}
+        {activeView === "agents" ? <AgentsView config={config} run={run} /> : null}
+        {activeView === "settings" ? <SettingsView config={config} /> : null}
       </section>
 
       <footer className="terminal-footer">
@@ -159,12 +193,13 @@ function App() {
   );
 }
 
-function TopBar({ activeView, setActiveView }) {
+function TopBar({ activeView, config, setActiveView }) {
+  const capValue = config?.policy?.maxRunBudgetUsdt ? `$${config.policy.maxRunBudgetUsdt} USDT` : "CONFIG PENDING";
   return (
     <header className="topbar">
       <div className="wordmark">
         <strong>ODDISEUS</strong>
-        <span>v0.9.4</span>
+        <span>{config?.version ? `v${config.version}` : "config pending"}</span>
         <small>TESTNET CLEARING LAYER</small>
       </div>
 
@@ -182,9 +217,9 @@ function TopBar({ activeView, setActiveView }) {
       </nav>
 
       <div className="telemetry-bar">
-        <StatusPill label="NET" value="BINANCE TESTNET" tone="green" />
-        <StatusPill label="POLICY" value="ENFORCING" />
-        <StatusPill label="CAP" value="$10 USDT" />
+        <StatusPill label="NET" value={config?.network?.label || "CONFIG PENDING"} tone={config ? "green" : "amber"} />
+        <StatusPill label="POLICY" value={config?.truthMode === "fail_closed_no_mock" ? "NO-MOCK" : "PENDING"} />
+        <StatusPill label="CAP" value={capValue} />
         <StatusPill label="UTC" value={new Date().toISOString().slice(11, 19)} />
       </div>
     </header>
@@ -192,6 +227,7 @@ function TopBar({ activeView, setActiveView }) {
 }
 
 function RunBanner({
+  config,
   loading,
   needsApproval,
   isTerminal,
@@ -204,6 +240,8 @@ function RunBanner({
   onStop
 }) {
   const status = readableStatus(run?.status);
+  const executionStatus = config?.integrations?.executionAdapter?.status;
+  const executionLabel = executionStatus === "live" ? "REAL TESTNET" : readableStatus(executionStatus || "config pending").toUpperCase();
   const actionLine =
     run?.stage === "approval"
       ? "EXECUTION HALTED FOR SOVEREIGN CLEARANCE"
@@ -221,9 +259,9 @@ function RunBanner({
       </div>
 
       <div className="run-facts">
-        <KeyValue label="PAIR" value={run?.intent?.symbol || "BTCUSDT"} />
-        <KeyValue label="BUDGET" value={`${run?.intent?.quoteBudgetUsdt || 10} USDT`} />
-        <KeyValue label="EXECUTION" value="REAL TESTNET" tone="green" />
+        <KeyValue label="PAIR" value={run?.intent?.symbol || config?.defaults?.symbol || "--"} />
+        <KeyValue label="BUDGET" value={`${run?.intent?.quoteBudgetUsdt || config?.defaults?.quoteBudgetUsdt || "--"} USDT`} />
+        <KeyValue label="EXECUTION" value={executionLabel} tone={executionStatus === "live" ? "green" : "amber"} />
         <KeyValue label="STATE" value={actionLine} tone={needsApproval ? "amber" : undefined} />
       </div>
 
@@ -253,24 +291,24 @@ function RunBanner({
   );
 }
 
-function ConsoleView({ run, progress }) {
+function ConsoleView({ config, run, progress }) {
   return (
     <>
       <Timeline run={run} />
       <section className="console-grid">
         <div className="column-stack">
-          <IntentContract run={run} />
+          <IntentContract config={config} run={run} />
           <MarketData run={run} />
           <PaidIntelligence run={run} />
         </div>
 
         <div className="column-stack">
-          <HumanGate run={run} />
-          <AgentSwarm run={run} />
-          <PolicyMatrix run={run} />
+          <HumanGate config={config} run={run} />
+          <AgentSwarm config={config} run={run} />
+          <PolicyMatrix config={config} run={run} />
         </div>
 
-        <ClearingLog run={run} progress={progress} />
+        <ClearingLog config={config} run={run} progress={progress} />
       </section>
     </>
   );
@@ -300,7 +338,9 @@ function Timeline({ run }) {
   );
 }
 
-function IntentContract({ run }) {
+function IntentContract({ config, run }) {
+  const symbol = run?.intent?.symbol || config?.defaults?.symbol || "--";
+  const budget = run?.intent?.quoteBudgetUsdt || config?.defaults?.quoteBudgetUsdt;
   return (
     <Panel icon={LockKeyhole} title="Intent Contract" meta="frozen input">
       <div className="intent-box">
@@ -308,9 +348,9 @@ function IntentContract({ run }) {
         <p>{run?.intent?.text || "Preparing sovereign intent contract..."}</p>
       </div>
       <div className="metric-grid three">
-        <Metric label="Target Asset" value={run?.intent?.symbol || "BTCUSDT"} />
-        <Metric label="Max Budget" value={`${run?.intent?.quoteBudgetUsdt || 10} USDT`} />
-        <Metric label="Run Mode" value="Testnet isolated" tone="green" />
+        <Metric label="Target Asset" value={symbol} />
+        <Metric label="Max Budget" value={budget ? `${budget} USDT` : "--"} />
+        <Metric label="Run Mode" value={readableStatus(config?.network?.executionMode || run?.intent?.mode || "pending")} tone="green" />
         <Metric label="Intent Hash" value={run?.intentHash || "pending"} wide />
       </div>
     </Panel>
@@ -362,8 +402,11 @@ function PaidIntelligence({ run }) {
   );
 }
 
-function HumanGate({ run }) {
-  const executionValue = Number(run?.intent?.quoteBudgetUsdt || 10);
+function HumanGate({ config, run }) {
+  const executionValue = Number(run?.intent?.quoteBudgetUsdt || config?.defaults?.quoteBudgetUsdt || 0);
+  const symbol = run?.intent?.symbol || config?.defaults?.symbol || "--";
+  const policyRef = config?.policy?.humanApprovalRef || "policy pending";
+  const maxSlippage = config?.policy?.maxSpreadBps;
   const isBlocked = run?.status === "blocked";
   return (
     <Panel
@@ -381,14 +424,18 @@ function HumanGate({ run }) {
       <div className="payload-box">
         <span>PROPOSED ACTION PAYLOAD</span>
         <strong>
-          Place <em>MARKET BUY</em> for <b>{executionValue.toFixed(2)} USDT</b> on {run?.intent?.symbol || "BTCUSDT"}
+          Place <em>MARKET BUY</em> for <b>{executionValue.toFixed(2)} USDT</b> on {symbol}
         </strong>
-        <small>BINANCE SPOT TESTNET ADAPTER</small>
+        <small>{config?.integrations?.executionAdapter?.label || "execution adapter pending"}</small>
       </div>
       <div className="metric-grid three">
-        <Metric label="Max Slippage" value="< 12 bps" />
-        <Metric label="Escalation Trigger" value="Every execution" tone="amber" />
-        <Metric label="Policy Ref" value="POL-HUM-08" />
+        <Metric label="Max Spread" value={maxSlippage ? `< ${maxSlippage} bps` : "--"} />
+        <Metric
+          label="Escalation Trigger"
+          value={config?.policy?.realExecutionRequiresApproval ? "Every execution" : "Policy disabled"}
+          tone="amber"
+        />
+        <Metric label="Policy Ref" value={policyRef} />
       </div>
       {run?.approval ? (
         <HashLine label={run.approval.approved ? "Operator Approval Hash" : "Operator Rejection Hash"} value={run.approval.approvalHash} />
@@ -397,8 +444,8 @@ function HumanGate({ run }) {
   );
 }
 
-function AgentSwarm({ run }) {
-  const moduleRows = getModuleRows(run);
+function AgentSwarm({ config, run }) {
+  const moduleRows = getModuleRows(run, config);
   return (
     <Panel icon={Bot} title="Execution Modules" meta={`${moduleRows.length} stateful lanes`}>
       <div className="agent-table">
@@ -426,15 +473,11 @@ function AgentSwarm({ run }) {
   );
 }
 
-function PolicyMatrix({ run }) {
+function PolicyMatrix({ config, run }) {
   const decisions = run?.policyDecisions || [];
   const rows = decisions.length
     ? decisions
-    : [
-        { id: "pol-01", decision: "QUEUED", action: "READ_MARKET", reason: "Allowed symbol and live market read." },
-        { id: "pol-02", decision: "QUEUED", action: "EXTERNAL_INTEL", reason: "Only runs if a real B402/x402 endpoint is configured." },
-        { id: "pol-03", decision: "QUEUED", action: "TESTNET_SPOT", reason: "Human approval required before dispatch." }
-      ];
+    : getQueuedPolicyRows(config);
 
   return (
     <Panel icon={ShieldCheck} title="Policy Verification Matrix" meta={`${decisions.length || 0} checks evaluated`}>
@@ -451,15 +494,18 @@ function PolicyMatrix({ run }) {
   );
 }
 
-function ClearingLog({ run, progress }) {
+function ClearingLog({ config, run, progress }) {
+  const symbol = run?.intent?.symbol || config?.defaults?.symbol || "--";
+  const budget = run?.intent?.quoteBudgetUsdt || config?.defaults?.quoteBudgetUsdt || "--";
+  const adapter = config?.integrations?.executionAdapter?.label || "execution adapter config pending";
   const lines = [
     ["system", "ODDISEUS clearing kernel online"],
-    ["intent", `locked ${run?.intent?.symbol || "BTCUSDT"} / ${run?.intent?.quoteBudgetUsdt || 10} USDT / testnet`],
+    ["intent", `locked ${symbol} / ${budget} USDT / testnet`],
     ["market", run?.marketSnapshot ? `captured ${run.marketSnapshot.snapshotHash}` : "awaiting Binance market state"],
     ["data", run?.paidData?.[0] ? `external-intel ${run.paidData[0].status}` : "external-intel connector pending"],
     ["risk", run?.riskAssessment ? `${run.riskAssessment.status} spread=${run.riskAssessment.spreadBps}` : "risk engine queued"],
     ["policy", run?.policyDecisions?.length ? `${run.policyDecisions.length} policy decisions emitted` : "policy matrix queued"],
-    ["execution", run?.execution ? `${run.execution.status} ${run.execution.blockedReason || run.execution.orderId || ""}` : "testnet adapter armed"],
+    ["execution", run?.execution ? `${run.execution.status} ${run.execution.blockedReason || run.execution.orderId || ""}` : `${adapter} armed`],
     ["receipt", run?.receipt ? `closed ${run.receipt.receiptHash}` : `route clearance ${progress}%`]
   ];
   return (
@@ -476,12 +522,12 @@ function ClearingLog({ run, progress }) {
   );
 }
 
-function PolicyView({ run }) {
+function PolicyView({ config, run }) {
   return (
     <section className="single-view">
-      <PolicyMatrix run={run} />
-      <HumanGate run={run} />
-      <ClearingLog run={run} progress={Math.round(((run?.completedStages?.length || 0) / STAGES.length) * 100)} />
+      <PolicyMatrix config={config} run={run} />
+      <HumanGate config={config} run={run} />
+      <ClearingLog config={config} run={run} progress={Math.round(((run?.completedStages?.length || 0) / STAGES.length) * 100)} />
     </section>
   );
 }
@@ -508,27 +554,33 @@ function ReceiptsView({ run, receiptHref }) {
   );
 }
 
-function AgentsView({ run }) {
+function AgentsView({ config, run }) {
   return (
     <section className="single-view">
-      <AgentSwarm run={run} />
+      <AgentSwarm config={config} run={run} />
       <PaidIntelligence run={run} />
       <MarketData run={run} />
     </section>
   );
 }
 
-function SettingsView() {
+function SettingsView({ config }) {
+  const policyConfig = config?.policy;
+  const integrations = config?.integrations || {};
   return (
     <section className="single-view">
-      <Panel icon={Gauge} title="Settings & Configuration" meta="testnet locked">
+      <Panel icon={Gauge} title="Settings & Configuration" meta={config?.truthMode || "config pending"}>
         <div className="settings-grid">
-          <Setting label="Execution Network" value="Binance Spot Testnet" locked />
-          <Setting label="Mainnet Execution" value="Disabled" locked danger />
-          <Setting label="Withdrawals" value="Denied by invariant" locked danger />
-          <Setting label="Max Run Budget" value="10 USDT" />
-          <Setting label="External Intel" value="B402/x402 only if endpoint exists" />
-          <Setting label="Human Approval" value="Operator click required for execution" locked />
+          <Setting label="Execution Network" value={config?.network?.executionNetwork || "Config pending"} locked />
+          <Setting label="Mainnet Execution" value={config?.network?.mainnetEnabled ? "Enabled" : "Disabled"} locked danger />
+          <Setting label="Withdrawals" value={config?.network?.withdrawalsEnabled ? "Enabled" : "Denied by invariant"} locked danger />
+          <Setting label="Max Run Budget" value={policyConfig?.maxRunBudgetUsdt ? `${policyConfig.maxRunBudgetUsdt} USDT` : "--"} />
+          <Setting label="External Intel" value={capabilityLabel(integrations.b402)} />
+          <Setting label="MCP Transport" value={capabilityLabel(integrations.mcp)} />
+          <Setting label="Human Approval" value={policyConfig?.realExecutionRequiresApproval ? "Operator click required" : "Not required"} locked />
+          <Setting label="Wallet Signature" value={capabilityLabel(integrations.walletSignature)} />
+          <Setting label="Receipt Storage" value={capabilityLabel(integrations.persistence)} />
+          <Setting label="On-chain Anchor" value={capabilityLabel(integrations.onchainAnchoring)} />
         </div>
       </Panel>
     </section>
@@ -646,6 +698,65 @@ function paidIntelMeta(item) {
   return "blocked or challenged";
 }
 
+function capabilityLabel(capability) {
+  if (!capability) return "Config pending";
+  if (capability.status === "live") return "Live";
+  if (capability.status === "blocked") return "Blocked";
+  return "Not configured";
+}
+
+function getQueuedPolicyRows(config) {
+  const allowedActions = config?.policy?.allowedActions || [];
+  if (!allowedActions.length) {
+    return [
+      {
+        id: "policy-config-pending",
+        decision: "QUEUED",
+        action: "CONFIG",
+        reason: "Waiting for backend policy config. ODDISEUS will not invent policy values."
+      }
+    ];
+  }
+
+  return allowedActions.map((action) => {
+    if (action === "READ_MARKET") {
+      return {
+        id: "queued-read-market",
+        decision: "QUEUED",
+        action,
+        reason: "Backend policy allows live market reads for configured symbols."
+      };
+    }
+    if (action === "EXTERNAL_INTEL") {
+      return {
+        id: "queued-external-intel",
+        decision: "QUEUED",
+        action,
+        reason:
+          config?.integrations?.b402?.status === "live"
+            ? "B402/x402 endpoint is configured and can be evaluated by policy."
+            : "B402/x402 endpoint is not configured; policy will skip without fabricating data."
+      };
+    }
+    if (action === "TESTNET_SPOT") {
+      return {
+        id: "queued-testnet-spot",
+        decision: "QUEUED",
+        action,
+        reason: config?.policy?.realExecutionRequiresApproval
+          ? "Human operator approval is required before real Spot Testnet dispatch."
+          : "Backend policy does not require human approval."
+      };
+    }
+    return {
+      id: `queued-${action.toLowerCase()}`,
+      decision: "QUEUED",
+      action,
+      reason: "Action is listed by backend policy."
+    };
+  });
+}
+
 function getStageSublabel(run, stage, done, active) {
   if (!run) return stage === "intent" ? "BOOTING" : "PENDING";
   const item = run.paidData?.[0];
@@ -682,8 +793,9 @@ function getStageTone(run, stage) {
   return "";
 }
 
-function getModuleRows(run) {
+function getModuleRows(run, config) {
   const item = run?.paidData?.[0];
+  const integrations = config?.integrations || {};
   const externalIntelState =
     item?.status === "acquired"
       ? "ACQUIRED"
@@ -696,15 +808,15 @@ function getModuleRows(run) {
   return [
     {
       name: "Market Reader",
-      id: "binance-testnet-read",
-      duty: "Reads live Spot/Futures Testnet market payloads",
+      id: integrations.binanceSpot?.id || "market-reader-config-pending",
+      duty: integrations.binanceSpot?.label || "Waiting for backend market-data capability config",
       state: run?.marketSnapshot ? "CAPTURED" : run?.stage === "market" ? "READING" : "PENDING",
       tone: run?.marketSnapshot ? "green" : run?.stage === "market" ? "bronze" : ""
     },
     {
       name: "External Intel Connector",
-      id: "b402-x402-endpoint",
-      duty: "Calls a configured B402/x402 testnet endpoint only if present",
+      id: integrations.b402?.id || "external-intel-config-pending",
+      duty: integrations.b402?.label || "Waiting for backend external-intelligence capability config",
       state: externalIntelState,
       tone: item?.status === "acquired" ? "green" : item?.status ? "bronze" : ""
     },
@@ -717,8 +829,8 @@ function getModuleRows(run) {
     },
     {
       name: "Execution Adapter",
-      id: "binance-spot-testnet-order",
-      duty: "Places a signed Spot Testnet order after operator approval",
+      id: integrations.executionAdapter?.id || "execution-adapter-config-pending",
+      duty: integrations.executionAdapter?.label || "Waiting for backend execution capability config",
       state:
         run?.execution?.status === "testnet_executed"
           ? "EXECUTED"

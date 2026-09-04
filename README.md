@@ -8,6 +8,8 @@ It is not a trading bot. It is infrastructure for agentic finance: agents can re
 
 ODDISEUS must not present simulated infrastructure as real infrastructure.
 
+The working rule is captured in [`NO_MOCK_CONTRACT.md`](./NO_MOCK_CONTRACT.md). Runtime truth is exposed through `/api/config` and `/api/health`; the frontend should not invent operational values that are not returned by the backend or a run payload.
+
 Current real lanes:
 
 - Live Binance Spot/Futures Testnet market reads.

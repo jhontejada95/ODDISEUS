@@ -13,6 +13,8 @@ const runs = new Map();
 app.use(express.json({ limit: "1mb" }));
 
 const PORT = Number(process.env.PORT || 5173);
+const PRODUCT_VERSION = process.env.ODDISEUS_PRODUCT_VERSION || "0.9.5";
+const TRUTH_MODE = "fail_closed_no_mock";
 const DEFAULT_SYMBOL = process.env.ODDISEUS_DEFAULT_SYMBOL || "BTCUSDT";
 const TESTNET_BASE_URL = normalizeBaseUrl(
   process.env.BINANCE_TESTNET_BASE_URL,
@@ -33,7 +35,8 @@ const policy = {
   maxFundingRateAbs: 0.0005,
   denyIfAdlRisk: ["HIGH"],
   denyWithdrawals: true,
-  denyLeverage: true
+  denyLeverage: true,
+  humanApprovalRef: "POL-HUM-08"
 };
 
 const stageOrder = [
@@ -48,21 +51,29 @@ const stageOrder = [
 ];
 
 app.get("/api/health", (_req, res) => {
+  const config = buildRuntimeConfig();
   res.json({
     ok: true,
     service: "oddiseus",
-    runtime: process.env.VERCEL ? "vercel" : "local",
-    vercelRegion: process.env.VERCEL_REGION || null,
-    truthMode: "fail_closed_no_mock",
-    binanceSpotBaseUrl: TESTNET_BASE_URL,
-    binanceFuturesBaseUrl: FUTURES_TESTNET_BASE_URL,
-    executionAdapter: "binance-spot-testnet-rest",
-    mcpExecutionAdapterConfigured: false,
-    b402EndpointConfigured: Boolean(process.env.B402_TESTNET_ENDPOINT),
-    testnetExecutionEnabled: process.env.ODDISEUS_ENABLE_TESTNET_EXECUTION === "true",
-    apiKeyPresent: Boolean(process.env.BINANCE_TESTNET_API_KEY),
-    apiSecretPresent: Boolean(process.env.BINANCE_TESTNET_API_SECRET)
+    runtime: config.runtime.environment,
+    vercelRegion: config.runtime.vercelRegion,
+    truthMode: config.truthMode,
+    binanceSpotBaseUrl: config.integrations.binanceSpot.baseUrl,
+    binanceFuturesBaseUrl: config.integrations.binanceFutures.baseUrl,
+    executionAdapter: config.integrations.executionAdapter.id,
+    mcpExecutionAdapterConfigured: config.integrations.mcp.configured,
+    b402EndpointConfigured: config.integrations.b402.configured,
+    durablePersistenceConfigured: config.integrations.persistence.configured,
+    walletSignatureConfigured: config.integrations.walletSignature.configured,
+    onchainAnchoringConfigured: config.integrations.onchainAnchoring.configured,
+    testnetExecutionEnabled: config.integrations.executionAdapter.enabled,
+    apiKeyPresent: config.integrations.executionAdapter.apiKeyPresent,
+    apiSecretPresent: config.integrations.executionAdapter.apiSecretPresent
   });
+});
+
+app.get("/api/config", (_req, res) => {
+  res.json(buildRuntimeConfig());
 });
 
 app.post("/api/runs", (req, res) => {
@@ -75,7 +86,7 @@ app.post("/api/runs", (req, res) => {
   const intent = {
     text: String(req.body?.intent || "Evaluate a BTCUSDT testnet micro-action."),
     symbol: String(req.body?.symbol || DEFAULT_SYMBOL).toUpperCase(),
-    quoteBudgetUsdt: Number(req.body?.quoteBudgetUsdt || 10),
+    quoteBudgetUsdt: Number(req.body?.quoteBudgetUsdt || policy.maxRunBudgetUsdt),
     mode: "binance-spot-testnet"
   };
 
@@ -609,6 +620,107 @@ function normalizeBaseUrl(value, fallback) {
   url = url.replace(/\/+$/, "");
   url = url.replace(/\/api$/i, "");
   return url;
+}
+
+function buildRuntimeConfig() {
+  const apiKeyPresent = Boolean(process.env.BINANCE_TESTNET_API_KEY);
+  const apiSecretPresent = Boolean(process.env.BINANCE_TESTNET_API_SECRET);
+  const testnetExecutionEnabled = process.env.ODDISEUS_ENABLE_TESTNET_EXECUTION === "true";
+  const b402Configured = Boolean(process.env.B402_TESTNET_ENDPOINT);
+  const persistenceConfigured = Boolean(
+    process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.KV_REST_API_URL
+  );
+  const walletSignatureConfigured = process.env.ODDISEUS_ENABLE_WALLET_SIGNATURES === "true";
+  const onchainAnchoringConfigured = Boolean(process.env.ODDISEUS_ONCHAIN_ANCHOR_ENDPOINT);
+
+  return {
+    service: "oddiseus",
+    version: PRODUCT_VERSION,
+    truthMode: TRUTH_MODE,
+    runtime: {
+      environment: process.env.VERCEL ? "vercel" : "local",
+      vercelRegion: process.env.VERCEL_REGION || null,
+      stateMode: persistenceConfigured ? "durable" : "client_restored_serverless_state"
+    },
+    defaults: {
+      symbol: DEFAULT_SYMBOL,
+      quoteBudgetUsdt: policy.maxRunBudgetUsdt,
+      intentText:
+        "Clear a BTCUSDT testnet micro-action through live Binance Testnet data, deterministic risk policy, human approval, real testnet execution, and a verifiable receipt. External paid-intelligence is used only when a real B402/x402 testnet endpoint is configured."
+    },
+    network: {
+      label: "Binance Testnet",
+      executionNetwork: "Binance Spot Testnet",
+      executionMode: "real_testnet_only",
+      mainnetEnabled: false,
+      withdrawalsEnabled: false,
+      leverageEnabled: false
+    },
+    policy,
+    integrations: {
+      binanceSpot: {
+        id: "binance-spot-testnet-market-data",
+        label: "Binance Spot Testnet market data",
+        configured: true,
+        enabled: true,
+        status: "live",
+        baseUrl: TESTNET_BASE_URL
+      },
+      binanceFutures: {
+        id: "binance-futures-testnet-market-data",
+        label: "Binance Futures Testnet market data",
+        configured: true,
+        enabled: true,
+        status: "live",
+        baseUrl: FUTURES_TESTNET_BASE_URL
+      },
+      executionAdapter: {
+        id: "binance-spot-testnet-rest",
+        label: "Binance Spot Testnet REST execution adapter",
+        configured: apiKeyPresent && apiSecretPresent,
+        enabled: apiKeyPresent && apiSecretPresent && testnetExecutionEnabled,
+        status: apiKeyPresent && apiSecretPresent && testnetExecutionEnabled ? "live" : "blocked",
+        apiKeyPresent,
+        apiSecretPresent,
+        approvalRequired: policy.realExecutionRequiresApproval
+      },
+      b402: {
+        id: "b402-x402-testnet-endpoint",
+        label: "B402/x402 external intelligence endpoint",
+        configured: b402Configured,
+        enabled: b402Configured,
+        status: b402Configured ? "live" : "not_configured"
+      },
+      mcp: {
+        id: "binance-mcp-transport",
+        label: "Binance MCP execution transport",
+        configured: false,
+        enabled: false,
+        status: "not_configured"
+      },
+      walletSignature: {
+        id: "wallet-operator-signature",
+        label: "Wallet approval signature",
+        configured: walletSignatureConfigured,
+        enabled: walletSignatureConfigured,
+        status: walletSignatureConfigured ? "live" : "not_configured"
+      },
+      onchainAnchoring: {
+        id: "receipt-onchain-anchor",
+        label: "Receipt on-chain anchoring",
+        configured: onchainAnchoringConfigured,
+        enabled: onchainAnchoringConfigured,
+        status: onchainAnchoringConfigured ? "live" : "not_configured"
+      },
+      persistence: {
+        id: "durable-run-receipt-store",
+        label: "Durable run and receipt storage",
+        configured: persistenceConfigured,
+        enabled: persistenceConfigured,
+        status: persistenceConfigured ? "live" : "not_configured"
+      }
+    }
+  };
 }
 
 function decision(decisionValue, action, reason) {
