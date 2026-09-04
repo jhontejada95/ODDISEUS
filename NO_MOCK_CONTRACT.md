@@ -15,16 +15,16 @@ Every visible capability must be one of:
 - Binance Futures Testnet market reads.
 - Signed Binance Spot Testnet execution when testnet credentials and `ODDISEUS_ENABLE_TESTNET_EXECUTION=true` are configured.
 - Deterministic policy/risk evaluation from captured run state.
-- Operator approval hash.
-- Receipt hash generation.
+- Wallet approval signatures through EIP-191 message signing with injected EVM wallets.
+- Operator approval, signature, and receipt hash generation.
+- Durable run/receipt persistence when Upstash Redis REST env vars are configured.
 
 ## Current not-configured capabilities
 
 - Binance MCP transport.
 - B402/x402 external-intelligence settlement unless `B402_TESTNET_ENDPOINT` is set.
-- Wallet approval signatures unless `ODDISEUS_ENABLE_WALLET_SIGNATURES=true` and a real wallet flow exists.
+- WalletConnect QR/mobile approvals unless `VITE_WALLETCONNECT_PROJECT_ID` is set.
 - Receipt on-chain anchoring unless `ODDISEUS_ONCHAIN_ANCHOR_ENDPOINT` is set.
-- Durable run/receipt persistence unless `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` are configured.
 
 ## Implementation rule
 
@@ -34,8 +34,7 @@ Frontend copy must derive operational values from `/api/config`, `/api/health`, 
 
 Any `not_configured` capability is a build target, not an acceptable final state. The current activation order is:
 
-1. Durable persistence via Upstash Redis REST.
-2. Wallet approval signatures.
-3. MCP transport.
-4. B402/x402 paid-intelligence endpoint.
-5. Receipt anchoring.
+1. WalletConnect QR/mobile coverage.
+2. MCP transport.
+3. B402/x402 paid-intelligence endpoint.
+4. Receipt anchoring.

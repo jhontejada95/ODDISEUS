@@ -4,6 +4,7 @@ import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Redis } from "@upstash/redis";
+import { verifyMessage } from "viem";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..");
@@ -15,7 +16,7 @@ let redisClient = null;
 app.use(express.json({ limit: "1mb" }));
 
 const PORT = Number(process.env.PORT || 5173);
-const PRODUCT_VERSION = process.env.ODDISEUS_PRODUCT_VERSION || "0.9.6";
+const PRODUCT_VERSION = process.env.ODDISEUS_PRODUCT_VERSION || "0.9.7";
 const TRUTH_MODE = "fail_closed_no_mock";
 const DEFAULT_SYMBOL = process.env.ODDISEUS_DEFAULT_SYMBOL || "BTCUSDT";
 const TESTNET_BASE_URL = normalizeBaseUrl(
@@ -130,9 +131,16 @@ async function handleRunAction(req, res) {
     }
 
     if (req.body.action === "approve") {
-      approveRun(run);
+      await approveRun(run, req.body);
       await saveRun(run);
       res.json({ run });
+      return;
+    }
+
+    if (req.body.action === "prepare_approval") {
+      prepareApproval(run, req.body);
+      await saveRun(run);
+      res.json({ run, approvalMessage: run.pendingApproval.message });
       return;
     }
 
@@ -195,9 +203,30 @@ app.post("/api/runs/:id/approve", async (req, res) => {
   const run = await findRun(req.params.id, res);
   if (!run) return;
 
-  approveRun(run);
-  await saveRun(run);
-  res.json({ run });
+  try {
+    await approveRun(run, req.body);
+    await saveRun(run);
+    res.json({ run });
+  } catch (err) {
+    blockRun(run, run.stage, err.message);
+    await saveRun(run);
+    res.status(422).json({ run, error: err.message });
+  }
+});
+
+app.post("/api/runs/:id/prepare-approval", async (req, res) => {
+  const run = await findRun(req.params.id, res);
+  if (!run) return;
+
+  try {
+    prepareApproval(run, req.body);
+    await saveRun(run);
+    res.json({ run, approvalMessage: run.pendingApproval.message });
+  } catch (err) {
+    blockRun(run, run.stage, err.message);
+    await saveRun(run);
+    res.status(422).json({ run, error: err.message });
+  }
 });
 
 app.post("/api/runs/:id/reject", async (req, res) => {
@@ -209,20 +238,100 @@ app.post("/api/runs/:id/reject", async (req, res) => {
   res.json({ run });
 });
 
-function approveRun(run) {
+function prepareApproval(run, requestBody = {}) {
+  if (run.stage !== "approval" || run.status !== "needs_approval") {
+    throw new Error("Approval challenge can only be prepared at the approval stage.");
+  }
+
+  const issuedAt = new Date().toISOString();
+  const challenge = {
+    service: "ODDISEUS",
+    version: PRODUCT_VERSION,
+    purpose: "Authorize a real Binance Spot Testnet order",
+    runId: run.id,
+    action: "MARKET_BUY",
+    symbol: run.intent.symbol,
+    quoteBudgetUsdt: run.intent.quoteBudgetUsdt,
+    intentHash: run.intentHash,
+    marketSnapshotHash: run.marketSnapshot?.snapshotHash,
+    riskAssessmentHash: run.riskAssessment?.assessmentHash,
+    policyDecisionsHash: hash(run.policyDecisions),
+    executionAdapter: "binance-spot-testnet-rest",
+    policyRef: policy.humanApprovalRef,
+    chainScope: "evm",
+    requestedSigner: requestBody.address || requestBody.signerAddress || null,
+    requestedChainId: requestBody.chainId || null,
+    nonce: crypto.randomBytes(16).toString("hex"),
+    issuedAt
+  };
+  const message = formatApprovalMessage(challenge);
+
+  run.pendingApproval = {
+    challenge,
+    message,
+    messageHash: hash(message)
+  };
+  run.events.push(event("WALLET_APPROVAL_CHALLENGE_CREATED", run.pendingApproval));
+}
+
+async function approveRun(run, requestBody = {}) {
+  if (run.stage !== "approval") {
+    throw new Error("Run is not waiting for approval.");
+  }
+
+  const pending = run.pendingApproval;
+  if (!pending?.message) {
+    throw new Error("Missing wallet approval challenge. Prepare approval before signing.");
+  }
+
+  const signerAddress = String(requestBody.address || requestBody.signerAddress || "").trim();
+  const signature = String(requestBody.signature || "").trim();
+  const message = String(requestBody.message || "");
+
+  if (!signerAddress || !signature || !message) {
+    throw new Error("Wallet address, signature, and signed message are required for approval.");
+  }
+  if (message !== pending.message) {
+    throw new Error("Signed message does not match the active ODDISEUS approval challenge.");
+  }
+
+  const verified = await verifyMessage({
+    address: signerAddress,
+    message,
+    signature
+  });
+
+  if (!verified) {
+    throw new Error("Wallet signature verification failed.");
+  }
+
   run.approval = {
     approved: true,
     approvedAt: new Date().toISOString(),
-    approver: "human-operator",
-    approvalHash: hash({ runId: run.id, stage: run.stage, at: Date.now() })
+    approver: "wallet-operator",
+    signerAddress,
+    chainId: requestBody.chainId || pending.challenge.requestedChainId || null,
+    connector: requestBody.connector || null,
+    signature,
+    signatureHash: hash(signature),
+    approvalMessageHash: pending.messageHash,
+    approvalHash: hash({
+      runId: run.id,
+      stage: run.stage,
+      signerAddress,
+      signature,
+      messageHash: pending.messageHash
+    })
   };
-  run.events.push(event("HUMAN_APPROVAL", run.approval));
+  delete run.pendingApproval;
+  run.events.push(event("WALLET_APPROVAL_VERIFIED", {
+    ...run.approval,
+    signature: "[redacted-in-event-hash]"
+  }));
 
-  if (run.stage === "approval") {
-    completeStage(run, "approval");
-    run.stage = "execution";
-    run.status = "running";
-  }
+  completeStage(run, "approval");
+  run.stage = "execution";
+  run.status = "running";
 }
 
 function rejectRun(run, reason) {
@@ -635,13 +744,40 @@ function normalizeBaseUrl(value, fallback) {
   return url;
 }
 
+function formatApprovalMessage(challenge) {
+  return [
+    "ODDISEUS Wallet Approval",
+    "",
+    `Purpose: ${challenge.purpose}`,
+    `Run ID: ${challenge.runId}`,
+    `Action: ${challenge.action}`,
+    `Symbol: ${challenge.symbol}`,
+    `Quote Budget USDT: ${challenge.quoteBudgetUsdt}`,
+    `Execution Adapter: ${challenge.executionAdapter}`,
+    `Policy Ref: ${challenge.policyRef}`,
+    "",
+    `Intent Hash: ${challenge.intentHash}`,
+    `Market Snapshot Hash: ${challenge.marketSnapshotHash || "pending"}`,
+    `Risk Assessment Hash: ${challenge.riskAssessmentHash || "pending"}`,
+    `Policy Decisions Hash: ${challenge.policyDecisionsHash}`,
+    "",
+    `Requested Signer: ${challenge.requestedSigner || "any-evm-signer"}`,
+    `Requested Chain ID: ${challenge.requestedChainId || "wallet-current-chain"}`,
+    `Nonce: ${challenge.nonce}`,
+    `Issued At: ${challenge.issuedAt}`,
+    "",
+    "Signing this message authorizes ODDISEUS to place the described Binance Spot Testnet order only. It does not authorize mainnet trading, withdrawals, leverage, custody, or transfer of real funds."
+  ].join("\n");
+}
+
 function buildRuntimeConfig() {
   const apiKeyPresent = Boolean(process.env.BINANCE_TESTNET_API_KEY);
   const apiSecretPresent = Boolean(process.env.BINANCE_TESTNET_API_SECRET);
   const testnetExecutionEnabled = process.env.ODDISEUS_ENABLE_TESTNET_EXECUTION === "true";
   const b402Configured = Boolean(process.env.B402_TESTNET_ENDPOINT);
   const persistenceConfigured = isDurablePersistenceConfigured();
-  const walletSignatureConfigured = process.env.ODDISEUS_ENABLE_WALLET_SIGNATURES === "true";
+  const walletSignatureConfigured = true;
+  const walletConnectConfigured = Boolean(process.env.VITE_WALLETCONNECT_PROJECT_ID);
   const onchainAnchoringConfigured = Boolean(process.env.ODDISEUS_ONCHAIN_ANCHOR_ENDPOINT);
 
   return {
@@ -714,7 +850,12 @@ function buildRuntimeConfig() {
         label: "Wallet approval signature",
         configured: walletSignatureConfigured,
         enabled: walletSignatureConfigured,
-        status: walletSignatureConfigured ? "live" : "not_configured"
+        status: "live",
+        supportedMethods: ["eip191_personal_sign"],
+        supportedWallets: walletConnectConfigured
+          ? ["injected-evm-wallets", "walletconnect"]
+          : ["injected-evm-wallets"],
+        walletConnectConfigured
       },
       onchainAnchoring: {
         id: "receipt-onchain-anchor",

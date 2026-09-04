@@ -112,7 +112,7 @@ Optional:
 B402_TESTNET_ENDPOINT
 UPSTASH_REDIS_REST_URL
 UPSTASH_REDIS_REST_TOKEN
-ODDISEUS_ENABLE_WALLET_SIGNATURES=false
+VITE_WALLETCONNECT_PROJECT_ID
 ODDISEUS_ONCHAIN_ANCHOR_ENDPOINT
 ```
 
@@ -134,6 +134,16 @@ When those variables are present, `/api/config` reports persistence as `live` an
 - sorted index `oddiseus:runs`
 
 Without Redis, ODDISEUS keeps a serverless-safe fallback that restores run state from the client payload, but `/api/config` reports persistence as `not_configured` instead of pretending durable storage exists.
+
+### Wallet approvals
+
+ODDISEUS requires an EVM wallet signature before execution. The backend creates a canonical approval challenge, the wallet signs it, and the backend verifies the signature with `viem` before moving a run from `approval` to `execution`.
+
+Injected EVM wallets such as MetaMask, Rabby, Binance Wallet, and compatible browser wallets work without additional env vars. For WalletConnect QR/mobile support, add:
+
+```text
+VITE_WALLETCONNECT_PROJECT_ID
+```
 
 ## Submission
 

@@ -276,6 +276,32 @@ p {
   color: #ffb4ab;
 }
 
+.wallet-controls {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  min-height: 36px;
+  padding-right: 8px;
+  border-right: 1px solid #323538;
+}
+
+.wallet-controls span {
+  max-width: 270px;
+  overflow: hidden;
+  color: #4edea3;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wallet-controls.connected button {
+  color: #ffb4ab;
+  background: rgba(147, 0, 10, 0.18);
+  border-color: rgba(255, 180, 171, 0.34);
+}
+
 .alert-strip {
   display: flex;
   gap: 10px;

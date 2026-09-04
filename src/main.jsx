@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { QueryClientProvider } from "@tanstack/react-query";
+import { useAccount, useConnect, useDisconnect, useSignMessage, WagmiProvider } from "wagmi";
 import {
   Activity,
   AlertTriangle,
@@ -20,6 +22,7 @@ import {
   X
 } from "lucide-react";
 import "./styles.css";
+import { queryClient, wagmiConfig } from "./wallet";
 
 const STAGES = [
   "intent",
@@ -57,6 +60,10 @@ function App() {
   const [activeView, setActiveView] = useState("console");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const { address, chainId, connector, isConnected } = useAccount();
+  const { connect, connectors, isPending: isConnecting } = useConnect();
+  const { disconnect } = useDisconnect();
+  const { signMessageAsync, isPending: isSigning } = useSignMessage();
 
   async function call(path, options = {}) {
     const response = await fetch(path, {
@@ -99,6 +106,51 @@ function App() {
         })
       });
       setRun(payload.run);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function signAndApprove() {
+    if (!run || run.status !== "needs_approval") return;
+    if (!isConnected || !address) {
+      setError("Connect an EVM wallet before approval. ODDISEUS will not approve by click-only.");
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+    try {
+      const prepared = await call("/api/runs", {
+        method: "POST",
+        body: JSON.stringify({
+          id: run.id,
+          run,
+          action: "prepare_approval",
+          address,
+          chainId,
+          connector: connector?.name || null
+        })
+      });
+      setRun(prepared.run);
+
+      const signature = await signMessageAsync({ message: prepared.approvalMessage });
+      const approved = await call("/api/runs", {
+        method: "POST",
+        body: JSON.stringify({
+          id: prepared.run.id,
+          run: prepared.run,
+          action: "approve",
+          address,
+          chainId,
+          connector: connector?.name || null,
+          message: prepared.approvalMessage,
+          signature
+        })
+      });
+      setRun(approved.run);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -162,13 +214,24 @@ function App() {
       <section className="terminal-body">
         <RunBanner
           config={config}
+          wallet={{
+            address,
+            chainId,
+            connectorName: connector?.name,
+            connectors,
+            connect,
+            disconnect,
+            isConnected,
+            isConnecting,
+            isSigning
+          }}
           loading={loading}
           needsApproval={needsApproval}
           isTerminal={isTerminal}
           receiptHref={receiptHref}
           run={run}
           onAdvance={() => runAction("step")}
-          onApprove={() => runAction("approve")}
+          onApprove={signAndApprove}
           onReject={() => runAction("reject")}
           onStart={() => startRun(config)}
           onStop={() => runAction("stop")}
@@ -228,6 +291,7 @@ function TopBar({ activeView, config, setActiveView }) {
 
 function RunBanner({
   config,
+  wallet,
   loading,
   needsApproval,
   isTerminal,
@@ -266,14 +330,15 @@ function RunBanner({
       </div>
 
       <div className="action-deck">
+        <WalletControls wallet={wallet} />
         <button type="button" onClick={onStart} disabled={loading}>
           <RefreshCcw size={15} /> Start New Run
         </button>
         <button type="button" onClick={onAdvance} disabled={loading || !run || needsApproval || isTerminal}>
           <Play size={15} /> Advance Stage
         </button>
-        <button className="primary" type="button" onClick={onApprove} disabled={loading || !needsApproval}>
-          <ShieldCheck size={15} /> Approve
+        <button className="primary" type="button" onClick={onApprove} disabled={loading || wallet?.isSigning || !needsApproval || !wallet?.isConnected}>
+          <ShieldCheck size={15} /> {wallet?.isSigning ? "Signing..." : "Sign & Approve"}
         </button>
         <button className="danger" type="button" onClick={onReject} disabled={loading || !run || isTerminal}>
           <X size={15} /> Reject
@@ -288,6 +353,37 @@ function RunBanner({
         ) : null}
       </div>
     </section>
+  );
+}
+
+function WalletControls({ wallet }) {
+  if (!wallet) return null;
+  if (wallet.isConnected) {
+    return (
+      <div className="wallet-controls connected">
+        <span title={wallet.address}>
+          {wallet.connectorName || "EVM Wallet"} · {shortAddress(wallet.address)} · chain {wallet.chainId || "--"}
+        </span>
+        <button type="button" onClick={() => wallet.disconnect()}>
+          Disconnect
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="wallet-controls">
+      {(wallet.connectors || []).map((connectorItem) => (
+        <button
+          key={connectorItem.uid || connectorItem.id}
+          type="button"
+          onClick={() => wallet.connect({ connector: connectorItem })}
+          disabled={wallet.isConnecting}
+        >
+          Connect {connectorItem.name}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -419,7 +515,7 @@ function HumanGate({ config, run }) {
           ? "EXECUTION HALTED FOR SOVEREIGN CLEARANCE"
           : isBlocked
             ? "SOVEREIGN CLEARANCE REFUSED"
-            : "OPERATOR APPROVAL NOT REQUESTED YET"}
+            : "WALLET SIGNATURE NOT REQUESTED YET"}
       </p>
       <div className="payload-box">
         <span>PROPOSED ACTION PAYLOAD</span>
@@ -438,7 +534,11 @@ function HumanGate({ config, run }) {
         <Metric label="Policy Ref" value={policyRef} />
       </div>
       {run?.approval ? (
-        <HashLine label={run.approval.approved ? "Operator Approval Hash" : "Operator Rejection Hash"} value={run.approval.approvalHash} />
+        <>
+          <HashLine label={run.approval.approved ? "Wallet Approval Hash" : "Operator Rejection Hash"} value={run.approval.approvalHash} />
+          {run.approval.signatureHash ? <HashLine label="Signature Hash" value={run.approval.signatureHash} /> : null}
+          {run.approval.signerAddress ? <HashLine label="Signer Address" value={run.approval.signerAddress} /> : null}
+        </>
       ) : null}
     </Panel>
   );
@@ -540,6 +640,7 @@ function ReceiptsView({ run, receiptHref }) {
           <HashLine label="Receipt Hash" value={run?.receipt?.receiptHash} large />
           <HashLine label="Intent Hash" value={run?.receipt?.intentHash || run?.intentHash} />
           <HashLine label="Market Hash" value={run?.receipt?.marketSnapshotHash} />
+          <HashLine label="Approval Proof" value={run?.approval?.signatureHash || run?.approval?.approvalHash} />
           <HashLine label="Execution Proof" value={run?.execution?.proofHash} />
         </div>
         {receiptHref ? (
@@ -577,7 +678,7 @@ function SettingsView({ config }) {
           <Setting label="Max Run Budget" value={policyConfig?.maxRunBudgetUsdt ? `${policyConfig.maxRunBudgetUsdt} USDT` : "--"} />
           <Setting label="External Intel" value={capabilityLabel(integrations.b402)} />
           <Setting label="MCP Transport" value={capabilityLabel(integrations.mcp)} />
-          <Setting label="Human Approval" value={policyConfig?.realExecutionRequiresApproval ? "Operator click required" : "Not required"} locked />
+          <Setting label="Human Approval" value={policyConfig?.realExecutionRequiresApproval ? "Wallet signature required" : "Not required"} locked />
           <Setting label="Wallet Signature" value={capabilityLabel(integrations.walletSignature)} />
           <Setting label="Receipt Storage" value={capabilityLabel(integrations.persistence)} />
           <Setting label="On-chain Anchor" value={capabilityLabel(integrations.onchainAnchoring)} />
@@ -854,6 +955,11 @@ function shortId(id) {
   return id.replace("run_", "OD-").slice(0, 18).toUpperCase();
 }
 
+function shortAddress(address) {
+  if (!address) return "not connected";
+  return `${address.slice(0, 6)}...${address.slice(-4)}`;
+}
+
 function statusTone(status) {
   if (status === "complete") return "ok";
   if (status === "blocked") return "bad";
@@ -861,4 +967,10 @@ function statusTone(status) {
   return "live";
 }
 
-createRoot(document.getElementById("root")).render(<App />);
+createRoot(document.getElementById("root")).render(
+  <WagmiProvider config={wagmiConfig}>
+    <QueryClientProvider client={queryClient}>
+      <App />
+    </QueryClientProvider>
+  </WagmiProvider>
+);

@@ -14,6 +14,7 @@
     "test": "node --test"
   },
   "dependencies": {
+    "@tanstack/react-query": "^5.102.8",
     "@upstash/redis": "^1.38.4",
     "@vitejs/plugin-react": "^5.0.2",
     "dotenv": "^17.2.1",
@@ -22,6 +23,8 @@
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "typescript": "^5.9.2",
-    "vite": "^7.1.5"
+    "viem": "^2.56.3",
+    "vite": "^7.1.5",
+    "wagmi": "^3.7.7"
   }
 }
