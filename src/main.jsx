@@ -65,6 +65,12 @@ function App() {
   const { disconnect } = useDisconnect();
   const { signMessageAsync, isPending: isSigning } = useSignMessage();
 
+  async function refreshConfig() {
+    const runtimeConfig = await call("/api/config");
+    setConfig(runtimeConfig);
+    return runtimeConfig;
+  }
+
   async function call(path, options = {}) {
     const response = await fetch(path, {
       headers: { "Content-Type": "application/json" },
@@ -158,6 +164,34 @@ function App() {
     }
   }
 
+  async function connectBinanceMcp() {
+    setLoading(true);
+    setError("");
+    try {
+      const payload = await call("/api/mcp/oauth/connect", { method: "POST" });
+      if (!payload.authorizationUrl) {
+        throw new Error("Binance MCP did not return an authorization URL.");
+      }
+      window.location.assign(payload.authorizationUrl);
+    } catch (err) {
+      setError(err.message);
+      setLoading(false);
+    }
+  }
+
+  async function disconnectBinanceMcp() {
+    setLoading(true);
+    setError("");
+    try {
+      await call("/api/mcp/oauth/disconnect", { method: "POST" });
+      await refreshConfig();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   useEffect(() => {
     let cancelled = false;
 
@@ -165,9 +199,21 @@ function App() {
       setLoading(true);
       setError("");
       try {
+        const callbackState = new URLSearchParams(window.location.search);
+        const mcpState = callbackState.get("mcp");
+        const mcpReason = callbackState.get("reason");
+        if (mcpState) {
+          window.history.replaceState({}, "", window.location.pathname);
+        }
+
         const runtimeConfig = await call("/api/config");
         if (cancelled) return;
         setConfig(runtimeConfig);
+        if (mcpState === "connected") {
+          setError("");
+        } else if (mcpState === "error") {
+          setError(`Binance MCP OAuth failed: ${mcpReason || "unknown_error"}`);
+        }
 
         const payload = await call("/api/runs", {
           method: "POST",
@@ -230,8 +276,10 @@ function App() {
           isTerminal={isTerminal}
           receiptHref={receiptHref}
           run={run}
+          onConnectMcp={connectBinanceMcp}
           onAdvance={() => runAction("step")}
           onApprove={signAndApprove}
+          onDisconnectMcp={disconnectBinanceMcp}
           onReject={() => runAction("reject")}
           onStart={() => startRun(config)}
           onStop={() => runAction("stop")}
@@ -299,12 +347,17 @@ function RunBanner({
   run,
   onAdvance,
   onApprove,
+  onConnectMcp,
+  onDisconnectMcp,
   onReject,
   onStart,
   onStop
 }) {
   const status = readableStatus(run?.status);
   const executionStatus = config?.integrations?.executionAdapter?.status;
+  const mcp = config?.integrations?.mcp;
+  const mcpLive = mcp?.status === "live";
+  const mcpOAuth = mcp?.auth === "oauth_user_token";
   const executionLabel = executionStatus === "live" ? "REAL TESTNET" : readableStatus(executionStatus || "config pending").toUpperCase();
   const actionLine =
     run?.stage === "approval"
@@ -331,6 +384,15 @@ function RunBanner({
 
       <div className="action-deck">
         <WalletControls wallet={wallet} />
+        {mcpLive && mcpOAuth ? (
+          <button className="quiet-danger" type="button" onClick={onDisconnectMcp} disabled={loading}>
+            Disconnect Binance MCP
+          </button>
+        ) : (
+          <button type="button" onClick={onConnectMcp} disabled={loading || !config}>
+            <KeyRound size={15} /> Connect Binance MCP
+          </button>
+        )}
         <button type="button" onClick={onStart} disabled={loading}>
           <RefreshCcw size={15} /> Start New Run
         </button>
@@ -668,6 +730,7 @@ function AgentsView({ config, run }) {
 function SettingsView({ config }) {
   const policyConfig = config?.policy;
   const integrations = config?.integrations || {};
+  const mcp = integrations.mcp;
   return (
     <section className="single-view">
       <Panel icon={Gauge} title="Settings & Configuration" meta={config?.truthMode || "config pending"}>
@@ -678,6 +741,7 @@ function SettingsView({ config }) {
           <Setting label="Max Run Budget" value={policyConfig?.maxRunBudgetUsdt ? `${policyConfig.maxRunBudgetUsdt} USDT` : "--"} />
           <Setting label="External Intel" value={capabilityLabel(integrations.b402)} />
           <Setting label="MCP Transport" value={capabilityLabel(integrations.mcp)} />
+          <Setting label="MCP Auth Source" value={mcp?.authSource || mcp?.auth || "not_configured"} />
           <Setting label="Human Approval" value={policyConfig?.realExecutionRequiresApproval ? "Wallet signature required" : "Not required"} locked />
           <Setting label="Wallet Signature" value={capabilityLabel(integrations.walletSignature)} />
           <Setting label="Receipt Storage" value={capabilityLabel(integrations.persistence)} />

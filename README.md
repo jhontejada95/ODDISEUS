@@ -21,7 +21,7 @@ Current real lanes:
 Explicitly not claimed until configured:
 
 - B402/x402 paid-intelligence settlement. If `B402_TESTNET_ENDPOINT` is missing, the run records `not_configured` and does not fabricate paid data.
-- MCP execution transport. ODDISEUS includes a real Binance Agent OS MCP probe, but reports `blocked_auth_required` until `BINANCE_MCP_ACCESS_TOKEN` can authenticate against Binance MCP.
+- MCP execution transport. ODDISEUS includes a real Binance Agent OS MCP OAuth connection and probe, but reports `blocked_auth_required` until the operator connects Binance MCP from the app.
 - On-chain anchoring or mainnet execution.
 
 ## Core Demo Flow
@@ -104,7 +104,6 @@ BINANCE_TESTNET_API_SECRET
 BINANCE_TESTNET_BASE_URL=https://testnet.binance.vision
 BINANCE_FUTURES_TESTNET_BASE_URL=https://demo-fapi.binance.com
 BINANCE_MCP_SERVER_URL=https://agent.binance.com/mcp/agentic
-BINANCE_MCP_ACCESS_TOKEN
 ODDISEUS_DEFAULT_SYMBOL=BTCUSDT
 ODDISEUS_ENABLE_TESTNET_EXECUTION=true
 ```
@@ -150,7 +149,7 @@ VITE_WALLETCONNECT_PROJECT_ID
 
 ### Binance Agent OS MCP
 
-ODDISEUS includes a real MCP transport probe for Binance Agent OS. It connects to the configured Streamable HTTP MCP endpoint, lists available tools, and exposes a `probeHash` only after the live handshake succeeds.
+ODDISEUS includes a real MCP transport connection for Binance Agent OS. The app publishes an OAuth Client ID Metadata Document, starts the Binance authorization-code + PKCE flow, stores the returned MCP tokens server-side in Redis, lists available MCP tools, and exposes a `probeHash` only after the live handshake succeeds.
 
 Default endpoint:
 
@@ -161,10 +160,19 @@ BINANCE_MCP_SERVER_URL=https://agent.binance.com/mcp/agentic
 Required for a live MCP status:
 
 ```text
+UPSTASH_REDIS_REST_URL
+UPSTASH_REDIS_REST_TOKEN
+```
+
+Then click `Connect Binance MCP` in the app, authorize with Binance, and return to ODDISEUS. If OAuth has not been completed or Binance rejects the connection, `/api/config`, `/api/health`, and `/api/mcp/status` report `blocked_auth_required`. ODDISEUS does not claim MCP is live from REST calls alone.
+
+Legacy/debug only:
+
+```text
 BINANCE_MCP_ACCESS_TOKEN
 ```
 
-If the token is missing or Binance requires additional OAuth authorization, `/api/config`, `/api/health`, and `/api/mcp/status` report `blocked_auth_required`. ODDISEUS does not claim MCP is live from REST calls alone.
+This exists as a fallback probe input while developing. Production should use the first-party OAuth flow instead of copying tokens from another client.
 
 ## Submission
 

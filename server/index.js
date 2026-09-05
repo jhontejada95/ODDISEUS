@@ -4,6 +4,12 @@ import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import {
+  discoverOAuthServerInfo,
+  exchangeAuthorization,
+  refreshAuthorization,
+  startAuthorization
+} from "@modelcontextprotocol/sdk/client/auth.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { Redis } from "@upstash/redis";
 import { verifyMessage } from "viem";
@@ -18,7 +24,7 @@ let redisClient = null;
 app.use(express.json({ limit: "1mb" }));
 
 const PORT = Number(process.env.PORT || 5173);
-const PRODUCT_VERSION = process.env.ODDISEUS_PRODUCT_VERSION || "0.9.10";
+const PRODUCT_VERSION = process.env.ODDISEUS_PRODUCT_VERSION || "0.9.11";
 const TRUTH_MODE = "fail_closed_no_mock";
 const DEFAULT_SYMBOL = process.env.ODDISEUS_DEFAULT_SYMBOL || "BTCUSDT";
 const TESTNET_BASE_URL = normalizeBaseUrl(
@@ -36,6 +42,10 @@ const BINANCE_MCP_SERVER_URL = normalizeEndpointUrl(
 const BINANCE_MCP_ACCESS_TOKEN = normalizeSecretToken(
   process.env.BINANCE_MCP_ACCESS_TOKEN || process.env.BINANCE_AGENT_OS_MCP_TOKEN || ""
 );
+const MCP_OAUTH_CLIENT_METADATA_PATH = "/api/mcp/oauth/client-metadata";
+const MCP_OAUTH_CALLBACK_PATH = "/api/mcp/oauth/callback";
+const MCP_OAUTH_TOKEN_KEY = "oddiseus:mcp:binance:oauth:tokens";
+const MCP_OAUTH_STATE_TTL_SECONDS = 10 * 60;
 let mcpProbeCache = null;
 
 const policy = {
@@ -91,6 +101,139 @@ app.get("/api/config", async (_req, res) => {
 
 app.get("/api/mcp/status", async (_req, res) => {
   res.json(await probeBinanceMcp({ force: true }));
+});
+
+app.get("/api/mcp/oauth/client-metadata", (req, res) => {
+  const origin = getPublicOrigin(req);
+  const clientId = buildMcpClientMetadataUrl(origin);
+  res.setHeader("Cache-Control", "public, max-age=300");
+  res.json({
+    client_id: clientId,
+    client_name: "ODDISEUS",
+    client_uri: origin,
+    redirect_uris: [buildMcpCallbackUrl(origin)],
+    grant_types: ["authorization_code"],
+    response_types: ["code"],
+    token_endpoint_auth_method: "none"
+  });
+});
+
+app.post("/api/mcp/oauth/connect", async (req, res) => {
+  try {
+    const origin = getPublicOrigin(req);
+    if (!origin.startsWith("https://")) {
+      res.status(400).json({
+        error:
+          "Binance MCP OAuth requires a deployed HTTPS origin. Use the Vercel production URL to connect."
+      });
+      return;
+    }
+    const redis = requireRedisForMcpOAuth();
+
+    const serverInfo = await discoverBinanceMcpOAuthServer();
+    if (!serverInfo.authorizationServerMetadata?.client_id_metadata_document_supported) {
+      res.status(502).json({
+        error: "Binance MCP authorization server does not advertise Client ID Metadata Document support."
+      });
+      return;
+    }
+
+    const clientInformation = { client_id: buildMcpClientMetadataUrl(origin) };
+    const redirectUrl = new URL(buildMcpCallbackUrl(origin));
+    const state = crypto.randomBytes(24).toString("hex");
+    const resource = new URL(serverInfo.resourceMetadata?.resource || BINANCE_MCP_SERVER_URL);
+    const { authorizationUrl, codeVerifier } = await startAuthorization(
+      serverInfo.authorizationServerUrl,
+      {
+        metadata: serverInfo.authorizationServerMetadata,
+        clientInformation,
+        redirectUrl,
+        state,
+        resource
+      }
+    );
+
+    await redis.set(
+      mcpOAuthStateKey(state),
+      {
+        state,
+        codeVerifier,
+        clientInformation,
+        redirectUri: String(redirectUrl),
+        authorizationServerUrl: String(serverInfo.authorizationServerUrl),
+        resource: String(resource),
+        createdAt: new Date().toISOString()
+      },
+      { ex: MCP_OAUTH_STATE_TTL_SECONDS }
+    );
+
+    res.json({
+      status: "authorization_required",
+      authorizationUrl: String(authorizationUrl),
+      expiresInSeconds: MCP_OAUTH_STATE_TTL_SECONDS
+    });
+  } catch (err) {
+    res.status(502).json({ error: sanitizeErrorMessage(err) });
+  }
+});
+
+app.get("/api/mcp/oauth/callback", async (req, res) => {
+  const origin = getPublicOrigin(req);
+  const error = req.query?.error ? String(req.query.error) : "";
+  const code = req.query?.code ? String(req.query.code) : "";
+  const state = req.query?.state ? String(req.query.state) : "";
+
+  if (error) {
+    res.redirect(`${origin}/?mcp=error&reason=${encodeURIComponent(error)}`);
+    return;
+  }
+  if (!code || !state) {
+    res.redirect(`${origin}/?mcp=error&reason=missing_code_or_state`);
+    return;
+  }
+
+  try {
+    const redis = requireRedisForMcpOAuth();
+    const stateKey = mcpOAuthStateKey(state);
+    const stored = await redis.get(stateKey);
+    if (!stored?.codeVerifier || !stored?.clientInformation?.client_id || !stored?.redirectUri) {
+      res.redirect(`${origin}/?mcp=error&reason=expired_or_unknown_state`);
+      return;
+    }
+
+    const serverInfo = await discoverBinanceMcpOAuthServer();
+    const tokens = await exchangeAuthorization(stored.authorizationServerUrl, {
+      metadata: serverInfo.authorizationServerMetadata,
+      clientInformation: stored.clientInformation,
+      authorizationCode: code,
+      codeVerifier: stored.codeVerifier,
+      redirectUri: new URL(stored.redirectUri),
+      resource: new URL(stored.resource || serverInfo.resourceMetadata?.resource || BINANCE_MCP_SERVER_URL)
+    });
+
+    await saveMcpOAuthTokens(tokens, {
+      clientInformation: stored.clientInformation,
+      authorizationServerUrl: stored.authorizationServerUrl,
+      resource: stored.resource,
+      connectedAt: new Date().toISOString()
+    });
+    await redis.del(stateKey);
+    mcpProbeCache = null;
+
+    res.redirect(`${origin}/?mcp=connected`);
+  } catch (err) {
+    res.redirect(`${origin}/?mcp=error&reason=${encodeURIComponent(sanitizeErrorMessage(err))}`);
+  }
+});
+
+app.post("/api/mcp/oauth/disconnect", async (_req, res) => {
+  const redis = getRedisClient();
+  if (redis) await redis.del(MCP_OAUTH_TOKEN_KEY);
+  mcpProbeCache = null;
+  res.json({
+    status: "disconnected",
+    mcp: await probeBinanceMcp({ force: true })
+  });
 });
 
 app.post("/api/runs", async (req, res) => {
@@ -786,6 +929,131 @@ function secretFingerprint(value) {
   };
 }
 
+function getPublicOrigin(req) {
+  const configured =
+    process.env.ODDISEUS_PUBLIC_ORIGIN || process.env.PUBLIC_URL || process.env.VERCEL_PROJECT_PRODUCTION_URL;
+  if (configured) return normalizeOrigin(configured);
+
+  const forwardedHost = req.get("x-forwarded-host");
+  const host = forwardedHost || req.get("host") || `127.0.0.1:${PORT}`;
+  const forwardedProto = req.get("x-forwarded-proto");
+  const proto = forwardedProto?.split(",")[0]?.trim() || req.protocol || "http";
+  return normalizeOrigin(`${proto}://${host}`);
+}
+
+function normalizeOrigin(value) {
+  let origin = String(value || "").trim();
+  if (!origin) return "";
+  if (!/^https?:\/\//i.test(origin)) origin = `https://${origin}`;
+  return origin.replace(/\/+$/, "");
+}
+
+function buildMcpClientMetadataUrl(origin) {
+  return `${origin}${MCP_OAUTH_CLIENT_METADATA_PATH}`;
+}
+
+function buildMcpCallbackUrl(origin) {
+  return `${origin}${MCP_OAUTH_CALLBACK_PATH}`;
+}
+
+function mcpOAuthStateKey(state) {
+  return `oddiseus:mcp:binance:oauth:state:${state}`;
+}
+
+function requireRedisForMcpOAuth() {
+  const redis = getRedisClient();
+  if (!redis) {
+    throw new Error("Durable Redis storage is required before starting Binance MCP OAuth.");
+  }
+  return redis;
+}
+
+async function discoverBinanceMcpOAuthServer() {
+  return discoverOAuthServerInfo(new URL(BINANCE_MCP_SERVER_URL), {
+    fetchFn: fetch
+  });
+}
+
+async function saveMcpOAuthTokens(tokens, metadata = {}) {
+  const redis = requireRedisForMcpOAuth();
+  const expiresAt = tokens.expires_in
+    ? new Date(Date.now() + Number(tokens.expires_in) * 1000).toISOString()
+    : null;
+
+  await redis.set(MCP_OAUTH_TOKEN_KEY, {
+    ...metadata,
+    tokens,
+    tokenFingerprint: secretFingerprint(tokens.access_token),
+    expiresAt,
+    updatedAt: new Date().toISOString()
+  });
+}
+
+async function loadMcpOAuthTokenRecord() {
+  const redis = getRedisClient();
+  if (!redis) return null;
+  return redis.get(MCP_OAUTH_TOKEN_KEY);
+}
+
+async function getMcpCredential() {
+  const stored = await loadMcpOAuthTokenRecord();
+  if (stored?.tokens?.access_token) {
+    if (stored.expiresAt && Date.parse(stored.expiresAt) <= Date.now() + 30_000) {
+      if (stored.tokens.refresh_token) {
+        const serverInfo = await discoverBinanceMcpOAuthServer();
+        const refreshed = await refreshAuthorization(stored.authorizationServerUrl, {
+          metadata: serverInfo.authorizationServerMetadata,
+          clientInformation: stored.clientInformation,
+          refreshToken: stored.tokens.refresh_token,
+          resource: new URL(stored.resource || serverInfo.resourceMetadata?.resource || BINANCE_MCP_SERVER_URL)
+        });
+        await saveMcpOAuthTokens(refreshed, {
+          clientInformation: stored.clientInformation,
+          authorizationServerUrl: stored.authorizationServerUrl,
+          resource: stored.resource,
+          connectedAt: stored.connectedAt,
+          refreshedAt: new Date().toISOString()
+        });
+        return {
+          token: normalizeSecretToken(refreshed.access_token),
+          auth: "oauth_user_token",
+          source: "binance_mcp_oauth",
+          expiresAt: refreshed.expires_in
+            ? new Date(Date.now() + Number(refreshed.expires_in) * 1000).toISOString()
+            : null
+        };
+      }
+
+      return {
+        token: "",
+        auth: "oauth_token_expired",
+        source: "binance_mcp_oauth",
+        expiresAt: stored.expiresAt,
+        expired: true
+      };
+    }
+
+    return {
+      token: normalizeSecretToken(stored.tokens.access_token),
+      auth: "oauth_user_token",
+      source: "binance_mcp_oauth",
+      expiresAt: stored.expiresAt || null,
+      connectedAt: stored.connectedAt || null
+    };
+  }
+
+  if (BINANCE_MCP_ACCESS_TOKEN) {
+    return {
+      token: BINANCE_MCP_ACCESS_TOKEN,
+      auth: "legacy_env_bearer_token",
+      source: "vercel_env",
+      expiresAt: null
+    };
+  }
+
+  return null;
+}
+
 function getCachedOrStaticMcpStatus() {
   if (mcpProbeCache?.status && Date.now() - mcpProbeCache.checkedAtMs < 60_000) {
     return mcpProbeCache.status;
@@ -816,8 +1084,16 @@ async function probeBinanceMcp({ force = false } = {}) {
     return mcpProbeCache.status;
   }
 
-  if (!BINANCE_MCP_ACCESS_TOKEN) {
+  const credential = await getMcpCredential();
+  if (!credential?.token) {
     const status = buildStaticMcpStatus();
+    if (credential?.expired) {
+      status.configured = true;
+      status.auth = credential.auth;
+      status.status = "blocked_auth_required";
+      status.reason = "The Binance MCP OAuth token expired and no refresh token is available. Reconnect Binance MCP.";
+      status.expiresAt = credential.expiresAt;
+    }
     mcpProbeCache = { checkedAtMs: Date.now(), status };
     return status;
   }
@@ -833,7 +1109,7 @@ async function probeBinanceMcp({ force = false } = {}) {
     const transport = new StreamableHTTPClientTransport(new URL(BINANCE_MCP_SERVER_URL), {
       requestInit: {
         headers: {
-          Authorization: `Bearer ${BINANCE_MCP_ACCESS_TOKEN}`
+          Authorization: `Bearer ${credential.token}`
         },
         signal: abortController.signal
       }
@@ -850,8 +1126,11 @@ async function probeBinanceMcp({ force = false } = {}) {
       status: "live",
       serverUrl: BINANCE_MCP_SERVER_URL,
       protocol: "streamable_http",
-      auth: "bearer_token_configured",
-      authTokenFingerprint: secretFingerprint(BINANCE_MCP_ACCESS_TOKEN),
+      auth: credential.auth,
+      authSource: credential.source,
+      authTokenFingerprint: secretFingerprint(credential.token),
+      tokenExpiresAt: credential.expiresAt,
+      connectedAt: credential.connectedAt || null,
       toolCount: toolNames.length,
       sampledTools: toolNames.slice(0, 8),
       checkedAt: new Date().toISOString(),
@@ -875,8 +1154,10 @@ async function probeBinanceMcp({ force = false } = {}) {
       status: authBlocked ? "blocked_auth_required" : "blocked",
       serverUrl: BINANCE_MCP_SERVER_URL,
       protocol: "streamable_http",
-      auth: "bearer_token_configured",
-      authTokenFingerprint: secretFingerprint(BINANCE_MCP_ACCESS_TOKEN),
+      auth: credential.auth,
+      authSource: credential.source,
+      authTokenFingerprint: secretFingerprint(credential.token),
+      tokenExpiresAt: credential.expiresAt,
       checkedAt: new Date().toISOString(),
       statusCode,
       reason: authBlocked
