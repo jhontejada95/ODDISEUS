@@ -24,7 +24,7 @@ let redisClient = null;
 app.use(express.json({ limit: "1mb" }));
 
 const PORT = Number(process.env.PORT || 5173);
-const PRODUCT_VERSION = process.env.ODDISEUS_PRODUCT_VERSION || "0.9.12";
+const PRODUCT_VERSION = process.env.ODDISEUS_PRODUCT_VERSION || "0.9.13";
 const TRUTH_MODE = "fail_closed_no_mock";
 const DEFAULT_SYMBOL = process.env.ODDISEUS_DEFAULT_SYMBOL || "BTCUSDT";
 const TESTNET_BASE_URL = normalizeBaseUrl(
@@ -42,8 +42,8 @@ const BINANCE_MCP_SERVER_URL = normalizeEndpointUrl(
 const BINANCE_MCP_ACCESS_TOKEN = normalizeSecretToken(
   process.env.BINANCE_MCP_ACCESS_TOKEN || process.env.BINANCE_AGENT_OS_MCP_TOKEN || ""
 );
-const MCP_OAUTH_CLIENT_METADATA_PATH = "/api/mcp-oauth-client-metadata";
-const MCP_OAUTH_CALLBACK_PATH = "/api/mcp-oauth-callback";
+const MCP_OAUTH_CLIENT_METADATA_PATH = "/api/mcp-oauth/client-metadata";
+const MCP_OAUTH_CALLBACK_PATH = "/api/mcp-oauth/callback";
 const MCP_OAUTH_TOKEN_KEY = "oddiseus:mcp:binance:oauth:tokens";
 const MCP_OAUTH_STATE_TTL_SECONDS = 10 * 60;
 let mcpProbeCache = null;
@@ -118,7 +118,7 @@ app.get(MCP_OAUTH_CLIENT_METADATA_PATH, (req, res) => {
   });
 });
 
-app.post("/api/mcp-oauth-connect", async (req, res) => {
+app.post("/api/mcp-oauth/connect", async (req, res) => {
   try {
     const origin = getPublicOrigin(req);
     if (!origin.startsWith("https://")) {
@@ -226,7 +226,7 @@ app.get(MCP_OAUTH_CALLBACK_PATH, async (req, res) => {
   }
 });
 
-app.post("/api/mcp-oauth-disconnect", async (_req, res) => {
+app.post("/api/mcp-oauth/disconnect", async (_req, res) => {
   const redis = getRedisClient();
   if (redis) await redis.del(MCP_OAUTH_TOKEN_KEY);
   mcpProbeCache = null;
