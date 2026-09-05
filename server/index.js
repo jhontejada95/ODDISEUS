@@ -18,7 +18,7 @@ let redisClient = null;
 app.use(express.json({ limit: "1mb" }));
 
 const PORT = Number(process.env.PORT || 5173);
-const PRODUCT_VERSION = process.env.ODDISEUS_PRODUCT_VERSION || "0.9.9";
+const PRODUCT_VERSION = process.env.ODDISEUS_PRODUCT_VERSION || "0.9.10";
 const TRUTH_MODE = "fail_closed_no_mock";
 const DEFAULT_SYMBOL = process.env.ODDISEUS_DEFAULT_SYMBOL || "BTCUSDT";
 const TESTNET_BASE_URL = normalizeBaseUrl(
@@ -777,6 +777,15 @@ function sanitizeErrorMessage(err) {
     .replace(/authorization[=:]\s*[A-Za-z0-9._~+/=-]+/gi, "authorization=[redacted]");
 }
 
+function secretFingerprint(value) {
+  const token = normalizeSecretToken(value);
+  if (!token) return null;
+  return {
+    length: token.length,
+    sha256Prefix: crypto.createHash("sha256").update(token).digest("hex").slice(0, 16)
+  };
+}
+
 function getCachedOrStaticMcpStatus() {
   if (mcpProbeCache?.status && Date.now() - mcpProbeCache.checkedAtMs < 60_000) {
     return mcpProbeCache.status;
@@ -794,6 +803,7 @@ function buildStaticMcpStatus() {
     serverUrl: BINANCE_MCP_SERVER_URL,
     protocol: "streamable_http",
     auth: BINANCE_MCP_ACCESS_TOKEN ? "bearer_token_configured" : "oauth_token_required",
+    authTokenFingerprint: secretFingerprint(BINANCE_MCP_ACCESS_TOKEN),
     reason: BINANCE_MCP_ACCESS_TOKEN
       ? "MCP token is configured but the live handshake has not been validated in this runtime cache yet."
       : "Missing BINANCE_MCP_ACCESS_TOKEN. Binance Agent OS MCP returned 401 without authorization.",
@@ -841,6 +851,7 @@ async function probeBinanceMcp({ force = false } = {}) {
       serverUrl: BINANCE_MCP_SERVER_URL,
       protocol: "streamable_http",
       auth: "bearer_token_configured",
+      authTokenFingerprint: secretFingerprint(BINANCE_MCP_ACCESS_TOKEN),
       toolCount: toolNames.length,
       sampledTools: toolNames.slice(0, 8),
       checkedAt: new Date().toISOString(),
@@ -865,6 +876,7 @@ async function probeBinanceMcp({ force = false } = {}) {
       serverUrl: BINANCE_MCP_SERVER_URL,
       protocol: "streamable_http",
       auth: "bearer_token_configured",
+      authTokenFingerprint: secretFingerprint(BINANCE_MCP_ACCESS_TOKEN),
       checkedAt: new Date().toISOString(),
       statusCode,
       reason: authBlocked

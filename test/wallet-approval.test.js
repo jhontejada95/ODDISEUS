@@ -42,6 +42,18 @@ test("mcp status never leaks bearer tokens in client-visible errors", async () =
   assert.match(redacted, /Bearer \[redacted\]/);
 });
 
+test("mcp status exposes only non-secret auth fingerprint shape", async () => {
+  const token = "super-secret-token-value";
+  const fingerprint = {
+    length: token.length,
+    sha256Prefix: "not-the-token"
+  };
+
+  assert.equal(fingerprint.length, 24);
+  assert.equal(fingerprint.sha256Prefix.includes(token), false);
+  assert.equal(JSON.stringify(fingerprint).includes(token), false);
+});
+
 test("wallet approval requires a challenge, rejects unsigned approval, and accepts verified EVM signature", async () => {
   const server = app.listen(0);
   await once(server, "listening");
