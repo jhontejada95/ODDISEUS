@@ -18,7 +18,7 @@ let redisClient = null;
 app.use(express.json({ limit: "1mb" }));
 
 const PORT = Number(process.env.PORT || 5173);
-const PRODUCT_VERSION = process.env.ODDISEUS_PRODUCT_VERSION || "0.9.8";
+const PRODUCT_VERSION = process.env.ODDISEUS_PRODUCT_VERSION || "0.9.9";
 const TRUTH_MODE = "fail_closed_no_mock";
 const DEFAULT_SYMBOL = process.env.ODDISEUS_DEFAULT_SYMBOL || "BTCUSDT";
 const TESTNET_BASE_URL = normalizeBaseUrl(
@@ -33,9 +33,9 @@ const BINANCE_MCP_SERVER_URL = normalizeEndpointUrl(
   process.env.BINANCE_MCP_SERVER_URL,
   "https://agent.binance.com/mcp/agentic"
 );
-const BINANCE_MCP_ACCESS_TOKEN = String(
+const BINANCE_MCP_ACCESS_TOKEN = normalizeSecretToken(
   process.env.BINANCE_MCP_ACCESS_TOKEN || process.env.BINANCE_AGENT_OS_MCP_TOKEN || ""
-).trim();
+);
 let mcpProbeCache = null;
 
 const policy = {
@@ -765,6 +765,18 @@ function normalizeEndpointUrl(value, fallback) {
   return url.replace(/\/+$/, "");
 }
 
+function normalizeSecretToken(value) {
+  return String(value || "").replace(/\s+/g, "");
+}
+
+function sanitizeErrorMessage(err) {
+  const message = String(err?.message || "Upstream request failed.");
+  return message
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]")
+    .replace(/access[_-]?token[=:]\s*[A-Za-z0-9._~+/=-]+/gi, "access_token=[redacted]")
+    .replace(/authorization[=:]\s*[A-Za-z0-9._~+/=-]+/gi, "authorization=[redacted]");
+}
+
 function getCachedOrStaticMcpStatus() {
   if (mcpProbeCache?.status && Date.now() - mcpProbeCache.checkedAtMs < 60_000) {
     return mcpProbeCache.status;
@@ -843,6 +855,7 @@ async function probeBinanceMcp({ force = false } = {}) {
   } catch (err) {
     const statusCode = err?.code || err?.status || null;
     const authBlocked = statusCode === 401 || statusCode === 403;
+    const safeReason = sanitizeErrorMessage(err);
     const status = {
       id: "binance-agent-os-mcp",
       label: "Binance Agent OS MCP transport",
@@ -856,7 +869,7 @@ async function probeBinanceMcp({ force = false } = {}) {
       statusCode,
       reason: authBlocked
         ? "Binance MCP rejected the configured token or requires additional OAuth authorization."
-        : err.message,
+        : safeReason,
       docsUrl: "https://developers.binance.com/en/docs/agent-native/mcp-server/agentic"
     };
     mcpProbeCache = { checkedAtMs: Date.now(), status };

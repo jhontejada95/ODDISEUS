@@ -30,6 +30,18 @@ test("mcp status is blocked for auth when Binance MCP token is not configured", 
   }
 });
 
+test("mcp status never leaks bearer tokens in client-visible errors", async () => {
+  const tokenPattern = /Bearer\s+super-secret-token-value/i;
+  const leaked = "Headers.append: \"Bearer super-secret-token-value\" is an invalid header value.";
+  const redacted = leaked
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]")
+    .replace(/access[_-]?token[=:]\s*[A-Za-z0-9._~+/=-]+/gi, "access_token=[redacted]")
+    .replace(/authorization[=:]\s*[A-Za-z0-9._~+/=-]+/gi, "authorization=[redacted]");
+
+  assert.equal(tokenPattern.test(redacted), false);
+  assert.match(redacted, /Bearer \[redacted\]/);
+});
+
 test("wallet approval requires a challenge, rejects unsigned approval, and accepts verified EVM signature", async () => {
   const server = app.listen(0);
   await once(server, "listening");
