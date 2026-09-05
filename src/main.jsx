@@ -168,7 +168,7 @@ function App() {
     setLoading(true);
     setError("");
     try {
-      const payload = await call("/api/mcp/oauth/connect", { method: "POST" });
+      const payload = await call("/api/mcp-oauth-connect", { method: "POST" });
       if (!payload.authorizationUrl) {
         throw new Error("Binance MCP did not return an authorization URL.");
       }
@@ -183,7 +183,7 @@ function App() {
     setLoading(true);
     setError("");
     try {
-      await call("/api/mcp/oauth/disconnect", { method: "POST" });
+      await call("/api/mcp-oauth-disconnect", { method: "POST" });
       await refreshConfig();
     } catch (err) {
       setError(err.message);
